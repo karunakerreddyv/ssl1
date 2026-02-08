@@ -1,0 +1,302 @@
+# =============================================================================
+# Alertmanager Configuration
+# Pravaha Platform - Single Server Deployment
+# =============================================================================
+#
+# This configuration handles:
+#   - Alert routing based on severity and service
+#   - Grouping of similar alerts
+#   - Silencing and inhibition rules
+#   - Notification channels (email, Slack, PagerDuty, webhooks)
+#
+# Environment Variables (set in .env):
+#   - SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+#   - SLACK_WEBHOOK_URL
+#   - PAGERDUTY_ROUTING_KEY
+#   - TEAMS_WEBHOOK_URL
+#
+# =============================================================================
+
+global:
+  # Default SMTP settings for email notifications
+  smtp_smarthost: 'smtp.gmail.com:587'
+  smtp_from: 'alertmanager@example.com'
+  smtp_auth_username: ''
+  smtp_auth_password: ''
+  smtp_require_tls: true
+
+  # Slack API URL (if using Slack)
+  # slack_api_url: 'https://slack.com/api/chat.postMessage'
+
+  # PagerDuty URL
+  # pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+  # Default resolve timeout
+  resolve_timeout: 5m
+
+# =============================================================================
+# Alert Templates
+# =============================================================================
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# =============================================================================
+# Routing Configuration
+# Determines how alerts are grouped and sent to receivers
+# =============================================================================
+route:
+  # Default receiver for all alerts
+  receiver: 'default-receiver'
+
+  # Group alerts by these labels
+  group_by: ['alertname', 'severity', 'service']
+
+  # Wait before sending a notification for a new group
+  group_wait: 30s
+
+  # Wait before sending notification about new alerts in existing group
+  group_interval: 5m
+
+  # Wait before resending a notification
+  repeat_interval: 4h
+
+  # Child routes for specific handling
+  routes:
+    # ---------------------------------------------------------------------------
+    # Critical alerts - immediate notification
+    # ---------------------------------------------------------------------------
+    - match:
+        severity: critical
+      receiver: 'critical-receiver'
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      continue: false
+
+    # ---------------------------------------------------------------------------
+    # Warning alerts - standard notification
+    # ---------------------------------------------------------------------------
+    - match:
+        severity: warning
+      receiver: 'warning-receiver'
+      group_wait: 1m
+      group_interval: 5m
+      repeat_interval: 4h
+      continue: false
+
+    # ---------------------------------------------------------------------------
+    # Info alerts - low priority
+    # ---------------------------------------------------------------------------
+    - match:
+        severity: info
+      receiver: 'info-receiver'
+      group_wait: 5m
+      group_interval: 15m
+      repeat_interval: 24h
+      continue: false
+
+    # ---------------------------------------------------------------------------
+    # Database alerts - specialized handling
+    # ---------------------------------------------------------------------------
+    - match:
+        service: postgres
+      receiver: 'database-receiver'
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 2h
+
+    # ---------------------------------------------------------------------------
+    # ML Service alerts
+    # ---------------------------------------------------------------------------
+    - match:
+        service: ml-service
+      receiver: 'ml-service-receiver'
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 2h
+
+    # ---------------------------------------------------------------------------
+    # Infrastructure alerts (disk, memory, CPU)
+    # ---------------------------------------------------------------------------
+    - match_re:
+        alertname: '^(DiskSpace|Memory|CPU).*'
+      receiver: 'infrastructure-receiver'
+      group_wait: 1m
+      group_interval: 5m
+      repeat_interval: 4h
+
+# =============================================================================
+# Receivers
+# Define notification channels
+# =============================================================================
+receivers:
+  # ---------------------------------------------------------------------------
+  # Default receiver - catches unmatched alerts
+  # ---------------------------------------------------------------------------
+  - name: 'default-receiver'
+    # Webhook for custom integrations
+    webhook_configs:
+      - url: 'http://backend:3000/api/internal/alerts/webhook'
+        send_resolved: true
+        http_config:
+          basic_auth:
+            username: 'alertmanager'
+            password: 'alertmanager-webhook-secret'
+
+  # ---------------------------------------------------------------------------
+  # Critical alerts receiver
+  # ---------------------------------------------------------------------------
+  - name: 'critical-receiver'
+    # Email notification (configure SMTP in global section)
+    # email_configs:
+    #   - to: 'ops-critical@example.com'
+    #     send_resolved: true
+    #     headers:
+    #       Subject: '[CRITICAL] Pravaha Alert: {{ .GroupLabels.alertname }}'
+    #     html: '{{ template "email.html" . }}'
+
+    # Slack notification
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+    #     channel: '#pravaha-alerts-critical'
+    #     username: 'Pravaha Alertmanager'
+    #     icon_emoji: ':rotating_light:'
+    #     send_resolved: true
+    #     title: '{{ if eq .Status "firing" }}:fire:{{ else }}:white_check_mark:{{ end }} {{ .GroupLabels.alertname }}'
+    #     text: >-
+    #       {{ range .Alerts }}
+    #       *Alert:* {{ .Annotations.summary }}
+    #       *Severity:* {{ .Labels.severity }}
+    #       *Service:* {{ .Labels.service }}
+    #       *Description:* {{ .Annotations.description }}
+    #       {{ end }}
+
+    # PagerDuty for on-call
+    # pagerduty_configs:
+    #   - routing_key: 'YOUR_PAGERDUTY_ROUTING_KEY'
+    #     severity: critical
+    #     description: '{{ .GroupLabels.alertname }}: {{ .Annotations.summary }}'
+    #     send_resolved: true
+
+    # Webhook fallback
+    webhook_configs:
+      - url: 'http://backend:3000/api/internal/alerts/webhook'
+        send_resolved: true
+
+  # ---------------------------------------------------------------------------
+  # Warning alerts receiver
+  # ---------------------------------------------------------------------------
+  - name: 'warning-receiver'
+    # Slack notification
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+    #     channel: '#pravaha-alerts'
+    #     username: 'Pravaha Alertmanager'
+    #     icon_emoji: ':warning:'
+    #     send_resolved: true
+
+    webhook_configs:
+      - url: 'http://backend:3000/api/internal/alerts/webhook'
+        send_resolved: true
+
+  # ---------------------------------------------------------------------------
+  # Info alerts receiver
+  # ---------------------------------------------------------------------------
+  - name: 'info-receiver'
+    webhook_configs:
+      - url: 'http://backend:3000/api/internal/alerts/webhook'
+        send_resolved: true
+
+  # ---------------------------------------------------------------------------
+  # Database alerts receiver
+  # ---------------------------------------------------------------------------
+  - name: 'database-receiver'
+    # email_configs:
+    #   - to: 'dba-team@example.com'
+    #     send_resolved: true
+    webhook_configs:
+      - url: 'http://backend:3000/api/internal/alerts/webhook'
+        send_resolved: true
+
+  # ---------------------------------------------------------------------------
+  # ML Service alerts receiver
+  # ---------------------------------------------------------------------------
+  - name: 'ml-service-receiver'
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+    #     channel: '#pravaha-ml-alerts'
+    #     username: 'Pravaha ML Alertmanager'
+    #     send_resolved: true
+    webhook_configs:
+      - url: 'http://backend:3000/api/internal/alerts/webhook'
+        send_resolved: true
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure alerts receiver
+  # ---------------------------------------------------------------------------
+  - name: 'infrastructure-receiver'
+    # email_configs:
+    #   - to: 'infra-team@example.com'
+    #     send_resolved: true
+    webhook_configs:
+      - url: 'http://backend:3000/api/internal/alerts/webhook'
+        send_resolved: true
+
+# =============================================================================
+# Inhibition Rules
+# Suppress certain alerts when others are firing
+# =============================================================================
+inhibit_rules:
+  # If a critical alert is firing, suppress warnings for the same alertname/service
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service']
+
+  # If a warning alert is firing, suppress info alerts for the same alertname/service
+  - source_match:
+      severity: 'warning'
+    target_match:
+      severity: 'info'
+    equal: ['alertname', 'service']
+
+  # If ServiceDown is firing, suppress all other alerts for that service
+  - source_match:
+      alertname: 'ServiceDown'
+    target_match_re:
+      alertname: '.+'
+    equal: ['service']
+
+  # If PostgreSQLDown is firing, suppress all postgres-related alerts
+  - source_match:
+      alertname: 'PostgreSQLDown'
+    target_match_re:
+      alertname: 'PostgreSQL.*|Postgres.*'
+    equal: ['instance']
+
+  # If RedisDown is firing, suppress all redis-related alerts
+  - source_match:
+      alertname: 'RedisDown'
+    target_match_re:
+      alertname: 'Redis.*'
+    equal: ['instance']
+
+  # If host is down, suppress all alerts from that host
+  - source_match:
+      alertname: 'NodeDown'
+    target_match_re:
+      alertname: '.+'
+    equal: ['instance']
+
+# =============================================================================
+# Time Intervals (for muting during maintenance windows)
+# =============================================================================
+# time_intervals:
+#   - name: 'maintenance-window'
+#     time_intervals:
+#       - weekdays: ['sunday']
+#         times:
+#           - start_time: '02:00'
+#             end_time: '06:00'
+#         location: 'UTC'

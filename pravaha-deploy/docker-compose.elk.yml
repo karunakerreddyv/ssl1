@@ -1,0 +1,278 @@
+# =============================================================================
+# Pravaha Platform - ELK Stack (Enterprise Logging)
+# Single Server Deployment
+# =============================================================================
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.elk.yml up -d
+#
+# Prerequisites:
+#   - Set vm.max_map_count >= 262144 for Elasticsearch
+#     Linux: sudo sysctl -w vm.max_map_count=262144
+#     Add to /etc/sysctl.conf for persistence: vm.max_map_count=262144
+#
+# Access:
+#   - Kibana: https://your-domain.com/elk/
+#   - Credentials: elastic / ${ELASTIC_PASSWORD}
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Elasticsearch - Log Storage and Search
+  # ===========================================================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
+    container_name: elasticsearch
+    hostname: elasticsearch
+    restart: unless-stopped
+    environment:
+      # Cluster configuration
+      - node.name=es-node-01
+      - cluster.name=pravaha-logs
+      - discovery.type=single-node
+      # Memory settings
+      - ES_JAVA_OPTS=-Xms${ELASTIC_HEAP_SIZE:-2g} -Xmx${ELASTIC_HEAP_SIZE:-2g}
+      - bootstrap.memory_lock=true
+      # Security
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - xpack.security.enabled=${ELASTIC_SECURITY_ENABLED:-true}
+      - xpack.security.enrollment.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      # Performance
+      - xpack.ml.enabled=false
+      - xpack.monitoring.collection.enabled=true
+      - ingest.geoip.downloader.enabled=false
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+      - ./elk/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: ${ELASTIC_MEMORY_LIMIT:-4G}
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -qE '(green|yellow)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - pravaha-network
+    labels:
+      - "com.pravaha.service=elasticsearch"
+      - "com.pravaha.component=elk"
+
+  # ===========================================================================
+  # Logstash - Log Processing Pipeline
+  # ===========================================================================
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.3
+    container_name: logstash
+    hostname: logstash
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      elk-setup:
+        condition: service_completed_successfully
+    environment:
+      - LS_JAVA_OPTS=-Xms${LOGSTASH_HEAP_SIZE:-1g} -Xmx${LOGSTASH_HEAP_SIZE:-1g}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - ELASTICSEARCH_HOSTS=elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=elastic
+      - ENVIRONMENT=${NODE_ENV:-production}
+    volumes:
+      - logstash_data:/usr/share/logstash/data
+      - ./elk/logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./elk/logstash/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
+    deploy:
+      resources:
+        limits:
+          memory: ${LOGSTASH_MEMORY_LIMIT:-2G}
+        reservations:
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9600/_node/pipelines | grep -q pravaha"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - pravaha-network
+    labels:
+      - "com.pravaha.service=logstash"
+      - "com.pravaha.component=elk"
+
+  # ===========================================================================
+  # Filebeat - Log Collection Agent
+  # ===========================================================================
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.11.3
+    container_name: filebeat
+    hostname: filebeat
+    restart: unless-stopped
+    user: root  # Required to read Docker logs
+    depends_on:
+      logstash:
+        condition: service_healthy
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    volumes:
+      - filebeat_data:/usr/share/filebeat/data
+      - ./elk/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      # Docker log access
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: filebeat -e -strict.perms=false
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "filebeat test config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - pravaha-network
+    labels:
+      - "com.pravaha.service=filebeat"
+      - "com.pravaha.component=elk"
+
+  # ===========================================================================
+  # Kibana - Log Visualization
+  # ===========================================================================
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.3
+    container_name: kibana
+    hostname: kibana
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      elk-setup:
+        condition: service_completed_successfully
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - KIBANA_SYSTEM_PASSWORD=${KIBANA_SYSTEM_PASSWORD}
+      - KIBANA_ENCRYPTION_KEY=${KIBANA_ENCRYPTION_KEY}
+      - KIBANA_REPORTING_KEY=${KIBANA_REPORTING_KEY}
+      - KIBANA_SECURITY_KEY=${KIBANA_SECURITY_KEY}
+      - PUBLIC_BASE_URL=https://${DOMAIN}/elk
+    volumes:
+      - kibana_data:/usr/share/kibana/data
+      - ./elk/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:5601/elk/api/status | grep -q 'available'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - pravaha-network
+    labels:
+      - "com.pravaha.service=kibana"
+      - "com.pravaha.component=elk"
+
+  # ===========================================================================
+  # ELK Setup - One-time Initialization
+  # ===========================================================================
+  elk-setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
+    container_name: elk-setup
+    hostname: elk-setup
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - KIBANA_SYSTEM_PASSWORD=${KIBANA_SYSTEM_PASSWORD}
+    volumes:
+      - ./elk/setup:/setup:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Waiting for Elasticsearch to be ready..."
+        until curl -s -u elastic:$${ELASTIC_PASSWORD} http://elasticsearch:9200/_cluster/health | grep -qE '(green|yellow)'; do
+          echo "Waiting for Elasticsearch..."
+          sleep 5
+        done
+        echo "Elasticsearch is ready!"
+
+        echo "Setting up kibana_system user password..."
+        curl -s -X POST -u elastic:$${ELASTIC_PASSWORD} \
+          -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_security/user/kibana_system/_password \
+          -d "{\"password\": \"$${KIBANA_SYSTEM_PASSWORD}\"}" || true
+
+        echo "Creating ILM policy..."
+        curl -s -X PUT -u elastic:$${ELASTIC_PASSWORD} \
+          -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_ilm/policy/pravaha-logs-policy \
+          -d @/setup/ilm-policy.json || true
+
+        echo "Creating index template..."
+        curl -s -X PUT -u elastic:$${ELASTIC_PASSWORD} \
+          -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_index_template/pravaha-logs-template \
+          -d @/setup/index-templates.json || true
+
+        echo "Creating initial index with alias..."
+        curl -s -X PUT -u elastic:$${ELASTIC_PASSWORD} \
+          -H "Content-Type: application/json" \
+          "http://elasticsearch:9200/pravaha-logs-000001" \
+          -d '{
+            "aliases": {
+              "pravaha-logs": {
+                "is_write_index": true
+              }
+            }
+          }' || true
+
+        echo "ELK setup complete!"
+    networks:
+      - pravaha-network
+    labels:
+      - "com.pravaha.service=elk-setup"
+      - "com.pravaha.component=elk"
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  elasticsearch_data:
+    driver: local
+  logstash_data:
+    driver: local
+  filebeat_data:
+    driver: local
+  kibana_data:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  pravaha-network:
+    name: pravaha-network
+    external: true

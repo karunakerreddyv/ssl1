@@ -1,0 +1,312 @@
+{
+  "index_patterns": ["pravaha-logs-*"],
+  "template": {
+    "settings": {
+      "index": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "refresh_interval": "5s",
+        "lifecycle": {
+          "name": "pravaha-logs-policy",
+          "rollover_alias": "pravaha-logs"
+        },
+        "codec": "best_compression",
+        "max_result_window": 50000,
+        "mapping": {
+          "total_fields": {
+            "limit": 2000
+          }
+        },
+        "query": {
+          "default_field": ["message", "log_message"]
+        }
+      },
+      "analysis": {
+        "analyzer": {
+          "log_analyzer": {
+            "type": "custom",
+            "tokenizer": "standard",
+            "filter": ["lowercase", "stop"]
+          }
+        }
+      }
+    },
+    "mappings": {
+      "dynamic": true,
+      "dynamic_templates": [
+        {
+          "strings_as_keywords": {
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        },
+        {
+          "message_fields": {
+            "match": "*message*",
+            "mapping": {
+              "type": "text",
+              "analyzer": "log_analyzer",
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 8191
+                }
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "@version": {
+          "type": "keyword"
+        },
+        "message": {
+          "type": "text",
+          "analyzer": "log_analyzer",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 8191
+            }
+          }
+        },
+        "log_message": {
+          "type": "text",
+          "analyzer": "log_analyzer",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 8191
+            }
+          }
+        },
+        "platform": {
+          "type": "keyword"
+        },
+        "environment": {
+          "type": "keyword"
+        },
+        "pravaha_service": {
+          "type": "keyword"
+        },
+        "service_type": {
+          "type": "keyword"
+        },
+        "log_level": {
+          "type": "keyword"
+        },
+        "request_id": {
+          "type": "keyword"
+        },
+        "tenant_id": {
+          "type": "keyword"
+        },
+        "user_id": {
+          "type": "keyword"
+        },
+        "client_ip": {
+          "type": "ip"
+        },
+        "http_method": {
+          "type": "keyword"
+        },
+        "http_status": {
+          "type": "integer"
+        },
+        "request_path": {
+          "type": "keyword"
+        },
+        "request_uri": {
+          "type": "keyword"
+        },
+        "request_time": {
+          "type": "float"
+        },
+        "duration_ms": {
+          "type": "float"
+        },
+        "inference_time_ms": {
+          "type": "float"
+        },
+        "task_runtime_seconds": {
+          "type": "float"
+        },
+        "query_duration_ms": {
+          "type": "float"
+        },
+        "body_bytes": {
+          "type": "long"
+        },
+        "upstream_connect_time": {
+          "type": "float"
+        },
+        "upstream_header_time": {
+          "type": "float"
+        },
+        "upstream_response_time": {
+          "type": "float"
+        },
+        "target_service": {
+          "type": "keyword"
+        },
+        "nginx_log_type": {
+          "type": "keyword"
+        },
+        "user_agent": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "http_referer": {
+          "type": "keyword"
+        },
+        "model_id": {
+          "type": "keyword"
+        },
+        "prediction_id": {
+          "type": "keyword"
+        },
+        "algorithm": {
+          "type": "keyword"
+        },
+        "task_id": {
+          "type": "keyword"
+        },
+        "task_name": {
+          "type": "keyword"
+        },
+        "task_status": {
+          "type": "keyword"
+        },
+        "task_retries": {
+          "type": "integer"
+        },
+        "worker_type": {
+          "type": "keyword"
+        },
+        "logger_name": {
+          "type": "keyword"
+        },
+        "dashboard_id": {
+          "type": "keyword"
+        },
+        "chart_id": {
+          "type": "keyword"
+        },
+        "database": {
+          "type": "keyword"
+        },
+        "db_user": {
+          "type": "keyword"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "event_type": {
+          "type": "keyword"
+        },
+        "sql_statement": {
+          "type": "text",
+          "index": false
+        },
+        "contains_sql": {
+          "type": "boolean"
+        },
+        "is_slow_query": {
+          "type": "boolean"
+        },
+        "redis_role": {
+          "type": "keyword"
+        },
+        "used_memory_bytes": {
+          "type": "long"
+        },
+        "stack_trace": {
+          "type": "text",
+          "index": false
+        },
+        "error_message": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 2048
+            }
+          }
+        },
+        "container": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            },
+            "image": {
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                },
+                "tag": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "host": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            },
+            "hostname": {
+              "type": "keyword"
+            },
+            "ip": {
+              "type": "ip"
+            }
+          }
+        },
+        "agent": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            },
+            "type": {
+              "type": "keyword"
+            },
+            "version": {
+              "type": "keyword"
+            }
+          }
+        },
+        "ecs": {
+          "properties": {
+            "version": {
+              "type": "keyword"
+            }
+          }
+        },
+        "tags": {
+          "type": "keyword"
+        }
+      }
+    }
+  },
+  "priority": 200,
+  "composed_of": [],
+  "_meta": {
+    "description": "Index template for Pravaha Platform logs",
+    "managed": true
+  }
+}

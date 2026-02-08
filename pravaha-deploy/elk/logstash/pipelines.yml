@@ -1,0 +1,11 @@
+# =============================================================================
+# Logstash Pipeline Configuration
+# Pravaha Platform Enterprise Logging
+# =============================================================================
+
+# Main pipeline for Pravaha logs
+- pipeline.id: pravaha
+  path.config: "/usr/share/logstash/pipeline/*.conf"
+  pipeline.workers: 2
+  pipeline.batch.size: 125
+  pipeline.batch.delay: 50

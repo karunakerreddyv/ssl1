@@ -1,0 +1,28 @@
+# =============================================================================
+# Grafana Dashboard Provisioning
+# Pravaha Platform - Single Server Deployment
+# =============================================================================
+#
+# This file configures automatic dashboard provisioning from the dashboards
+# directory. Dashboards are loaded when Grafana starts and can be updated
+# by modifying the JSON files.
+#
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  # ---------------------------------------------------------------------------
+  # Pravaha Dashboards
+  # ---------------------------------------------------------------------------
+  - name: 'Pravaha Platform'
+    orgId: 1
+    folder: 'Pravaha'
+    folderUid: 'pravaha'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+      foldersFromFilesStructure: false

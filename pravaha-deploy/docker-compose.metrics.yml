@@ -1,0 +1,305 @@
+# =============================================================================
+# Pravaha Platform - Prometheus Metrics Stack
+# Enterprise-grade monitoring, alerting, and visualization
+# =============================================================================
+#
+# Usage:
+#   Deploy with main stack:
+#     docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
+#
+#   Or standalone (if main stack is already running):
+#     docker compose -f docker-compose.metrics.yml up -d
+#
+# Access Points:
+#   - Prometheus: http://localhost:9090 (internal metrics)
+#   - Grafana: http://localhost:3002 (dashboards)
+#   - Alertmanager: http://localhost:9093 (alert management)
+#
+# Services:
+#   - prometheus: Time-series metrics database and scraper
+#   - grafana: Visualization and dashboarding
+#   - alertmanager: Alert routing and notification
+#   - postgres-exporter: PostgreSQL metrics
+#   - redis-exporter: Redis metrics
+#   - node-exporter: Host system metrics
+#
+# =============================================================================
+
+# =============================================================================
+# Default Logging Configuration (YAML anchor)
+# Prevents disk exhaustion by rotating logs: max 10MB per file, keep 5 files
+# =============================================================================
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# =============================================================================
+# Common healthcheck configuration
+# =============================================================================
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 30s
+
+services:
+  # ===========================================================================
+  # Prometheus - Metrics Collection and Storage
+  # Scrapes metrics from all services and stores time-series data
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: pravaha-prometheus
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}'
+      - '--storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-10GB}'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts:/etc/prometheus/alerts:ro
+      - prometheus_data:/prometheus
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+
+  # ===========================================================================
+  # Grafana - Visualization and Dashboarding
+  # Enterprise-grade dashboards for metrics visualization
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: pravaha-grafana
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${GRAFANA_PORT:-3002}:3000"
+    environment:
+      # Admin credentials
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Server configuration
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3002}
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+      # Database (use SQLite by default, can switch to PostgreSQL)
+      - GF_DATABASE_TYPE=sqlite3
+      - GF_DATABASE_PATH=/var/lib/grafana/grafana.db
+      # Provisioning paths
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      # Security settings
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_SECURITY_COOKIE_SECURE=${GRAFANA_COOKIE_SECURE:-false}
+      - GF_SECURITY_COOKIE_SAMESITE=lax
+      # Auth settings
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-false}
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+      # Users
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_AUTO_ASSIGN_ORG=true
+      - GF_USERS_AUTO_ASSIGN_ORG_ROLE=Viewer
+      # Alerting
+      - GF_ALERTING_ENABLED=true
+      - GF_UNIFIED_ALERTING_ENABLED=true
+      # Logging
+      - GF_LOG_MODE=console
+      - GF_LOG_LEVEL=${LOG_LEVEL:-info}
+      # Performance
+      - GF_DATAPROXY_TIMEOUT=300
+      - GF_DATAPROXY_KEEP_ALIVE_SECONDS=300
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+
+  # ===========================================================================
+  # Alertmanager - Alert Routing and Notification
+  # Handles deduplication, grouping, and routing of alerts
+  # ===========================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: pravaha-alertmanager
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:${ALERTMANAGER_PORT:-9093}'
+      - '--cluster.advertise-address=0.0.0.0:9094'
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      start_period: 15s
+
+  # ===========================================================================
+  # PostgreSQL Exporter - Database Metrics
+  # Exposes PostgreSQL metrics for Prometheus
+  # ===========================================================================
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: pravaha-postgres-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      # Connection string with SSL support
+      - DATA_SOURCE_NAME=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}?sslmode=${POSTGRES_SSL_MODE:-disable}
+      # Alternative: Use individual variables
+      - DATA_SOURCE_USER=${POSTGRES_USER}
+      - DATA_SOURCE_PASS=${POSTGRES_PASSWORD}
+      # Exporter settings
+      - PG_EXPORTER_EXTEND_QUERY_PATH=/etc/postgres_exporter/queries.yml
+      - PG_EXPORTER_AUTO_DISCOVER_DATABASES=true
+      - PG_EXPORTER_EXCLUDE_DATABASES=template0,template1
+    volumes:
+      - ./monitoring/postgres-exporter-queries.yml:/etc/postgres_exporter/queries.yml:ro
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9187/metrics"]
+      start_period: 15s
+
+  # ===========================================================================
+  # Redis Exporter - Cache/Queue Metrics
+  # Exposes Redis metrics for Prometheus
+  # ===========================================================================
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.55.0
+    container_name: pravaha-redis-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Export all Redis databases (0-3 used by Pravaha)
+      - REDIS_EXPORTER_CHECK_KEYS=*
+      - REDIS_EXPORTER_COUNT_KEYS=*
+      - REDIS_EXPORTER_INCL_SYSTEM_METRICS=true
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9121/metrics"]
+      start_period: 15s
+
+  # ===========================================================================
+  # Node Exporter - Host System Metrics
+  # Exposes hardware and OS metrics
+  # ===========================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: pravaha-node-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--collector.netclass.ignored-devices=^(veth.*|docker.*|br-.*)$$'
+      - '--collector.diskstats.ignored-devices=^(ram|loop|fd|(h|s|v|xv)d[a-z]|nvme\\d+n\\d+p)\\d+$$'
+      - '--no-collector.ipvs'
+    pid: host
+    volumes:
+      # Read-only access to host metrics
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      start_period: 15s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  pravaha-network:
+    external: true
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alertmanager_data:
+    driver: local

@@ -1,0 +1,104 @@
+# =============================================================================
+# Kibana Configuration - Pravaha Platform Enterprise Logging
+# =============================================================================
+
+# Server settings
+server.host: "0.0.0.0"
+server.port: 5601
+server.name: "pravaha-kibana"
+
+# Base path for reverse proxy
+server.basePath: "/elk"
+server.rewriteBasePath: true
+
+# Public URL (for redirects and links)
+server.publicBaseUrl: "${PUBLIC_BASE_URL:}"
+
+# Elasticsearch connection
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "${KIBANA_SYSTEM_PASSWORD}"
+
+# Request timeout
+elasticsearch.requestTimeout: 30000
+elasticsearch.shardTimeout: 30000
+elasticsearch.pingTimeout: 3000
+
+# Encryption keys (required for saved objects, sessions, reporting)
+xpack.encryptedSavedObjects.encryptionKey: "${KIBANA_ENCRYPTION_KEY}"
+xpack.reporting.encryptionKey: "${KIBANA_REPORTING_KEY}"
+xpack.security.encryptionKey: "${KIBANA_SECURITY_KEY}"
+
+# Session settings
+xpack.security.session.idleTimeout: "1h"
+xpack.security.session.lifespan: "24h"
+
+# Logging
+logging.root.level: info
+logging.appenders.default:
+  type: console
+  layout:
+    type: json
+
+# Telemetry (disable for air-gapped deployments)
+telemetry.enabled: false
+telemetry.optIn: false
+
+# Monitoring (use built-in stack monitoring)
+monitoring.ui.enabled: true
+monitoring.ui.container.elasticsearch.enabled: true
+
+# Reporting (disable if not needed)
+xpack.reporting.enabled: true
+xpack.reporting.queue.timeout: 300000
+
+# Maps (disable if not using geo data)
+map.includeElasticMapsService: false
+
+# Saved objects
+savedObjects.maxImportPayloadBytes: 52428800
+
+# Spaces (enable for multi-tenant log separation)
+xpack.spaces.enabled: true
+xpack.spaces.maxSpaces: 100
+
+# Default index pattern
+# Will be created during setup
+# defaultIndex: "pravaha-logs-*"
+
+# Search timeout
+data.search.aggs.shardDelay.enabled: false
+data.search.sessions.enabled: false
+
+# APM configuration (disabled)
+# elastic.apm.active: false
+
+# Fleet configuration (disabled for basic logging)
+xpack.fleet.enabled: false
+
+# Alerting
+xpack.alerting.rules.run.alerts.max: 1000
+
+# Task manager
+xpack.task_manager.max_workers: 10
+
+# Optimize for single-node deployment
+# Reduce default query sizes for better performance
+discover.search.customSampleSize: 500
+
+# CSP headers
+# Note: These may need adjustment based on your security requirements
+csp.strict: false
+csp.warnLegacyBrowsers: true
+
+# Localization
+i18n.locale: "en"
+
+# New platform settings
+newsfeed.enabled: false
+
+# Banner (optional - for production environment indication)
+# xpack.banners.placement: "top"
+# xpack.banners.textContent: "PRODUCTION ENVIRONMENT - Pravaha Platform Logs"
+# xpack.banners.textColor: "#FFFFFF"
+# xpack.banners.backgroundColor: "#CC0000"

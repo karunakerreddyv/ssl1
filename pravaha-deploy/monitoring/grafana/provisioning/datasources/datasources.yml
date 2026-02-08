@@ -1,0 +1,193 @@
+# =============================================================================
+# Grafana Datasources Provisioning
+# Pravaha Platform - Single Server Deployment
+# =============================================================================
+#
+# This file auto-provisions datasources when Grafana starts.
+# Datasources defined here will be created automatically.
+#
+# Datasources:
+#   - Prometheus: Primary metrics source
+#   - Loki: Log aggregation (if deployed with logging stack)
+#   - PostgreSQL: Direct database access for ad-hoc queries
+#   - Alertmanager: Alert state visibility
+#
+# =============================================================================
+
+apiVersion: 1
+
+# =============================================================================
+# Datasource deletion configuration
+# Set prune to true to delete datasources not defined in this file
+# =============================================================================
+deleteDatasources: []
+# - name: Old-Datasource
+#   orgId: 1
+
+# =============================================================================
+# Datasource Definitions
+# =============================================================================
+datasources:
+  # ---------------------------------------------------------------------------
+  # Prometheus - Primary Metrics Database
+  # ---------------------------------------------------------------------------
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    uid: prometheus
+    jsonData:
+      # Time interval for rate() and increase() functions
+      timeInterval: "15s"
+      # Query timeout
+      queryTimeout: "60s"
+      # HTTP method
+      httpMethod: POST
+      # Manage alerts with this datasource
+      manageAlerts: true
+      # Prometheus type
+      prometheusType: Prometheus
+      # Prometheus version (for feature detection)
+      prometheusVersion: "2.48.0"
+      # Enable exemplar support
+      exemplarTraceIdDestinations:
+        - name: traceID
+          datasourceUid: tempo
+      # Caching
+      cacheLevel: 'Low'
+      # Incremental querying (for large time ranges)
+      incrementalQuerying: true
+      incrementalQueryOverlapWindow: "10m"
+    # Version for updates
+    version: 1
+
+  # ---------------------------------------------------------------------------
+  # Loki - Log Aggregation (Optional)
+  # Enable when deploying with docker-compose.logging.yml
+  # ---------------------------------------------------------------------------
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+    editable: false
+    uid: loki
+    jsonData:
+      # Maximum number of log lines to return
+      maxLines: 5000
+      # Derived fields (extract trace IDs from logs)
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"trace_id":"([a-f0-9]+)"'
+          url: '${__value.raw}'
+          datasourceUid: tempo
+        - name: RequestID
+          matcherRegex: '"request_id":"([a-f0-9-]+)"'
+          url: ''
+      # Timeout
+      timeout: "60"
+    # Version for updates
+    version: 1
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - Direct Database Access
+  # For ad-hoc queries and custom dashboards
+  # ---------------------------------------------------------------------------
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: ${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}
+    database: ${PLATFORM_DB:-autoanalytics}
+    user: ${POSTGRES_USER}
+    isDefault: false
+    editable: false
+    uid: postgres
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      # SSL mode
+      sslmode: ${POSTGRES_SSL_MODE:-disable}
+      # Connection limits
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      # PostgreSQL version (for feature detection)
+      postgresVersion: 1500
+      # Enable time series support
+      timescaledb: false
+    # Version for updates
+    version: 1
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager - Alert State Visibility
+  # ---------------------------------------------------------------------------
+  - name: Alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    isDefault: false
+    editable: false
+    uid: alertmanager
+    jsonData:
+      # Implementation type
+      implementation: prometheus
+      # Handle Grafana-managed alerts
+      handleGrafanaManagedAlerts: false
+    # Version for updates
+    version: 1
+
+  # ---------------------------------------------------------------------------
+  # Jaeger/Tempo - Distributed Tracing (Optional)
+  # Enable when deploying with tracing stack
+  # ---------------------------------------------------------------------------
+  # - name: Tempo
+  #   type: tempo
+  #   access: proxy
+  #   url: http://tempo:3200
+  #   isDefault: false
+  #   editable: false
+  #   uid: tempo
+  #   jsonData:
+  #     httpMethod: GET
+  #     tracesToLogsV2:
+  #       datasourceUid: loki
+  #       spanStartTimeShift: '-1h'
+  #       spanEndTimeShift: '1h'
+  #       filterByTraceID: true
+  #       filterBySpanID: false
+  #     tracesToMetrics:
+  #       datasourceUid: prometheus
+  #       spanStartTimeShift: '-1h'
+  #       spanEndTimeShift: '1h'
+  #     nodeGraph:
+  #       enabled: true
+  #     serviceMap:
+  #       datasourceUid: prometheus
+  #     search:
+  #       hide: false
+  #     lokiSearch:
+  #       datasourceUid: loki
+  #   version: 1
+
+  # ---------------------------------------------------------------------------
+  # Redis - Cache Metrics (Optional)
+  # Requires redis-datasource plugin
+  # ---------------------------------------------------------------------------
+  # - name: Redis
+  #   type: redis-datasource
+  #   access: proxy
+  #   url: redis://redis:6379
+  #   isDefault: false
+  #   editable: false
+  #   uid: redis
+  #   jsonData:
+  #     client: standalone
+  #     poolSize: 5
+  #     timeout: 10
+  #     pingInterval: 0
+  #     pipelineWindow: 0
+  #   secureJsonData:
+  #     password: ${REDIS_PASSWORD}
+  #   version: 1

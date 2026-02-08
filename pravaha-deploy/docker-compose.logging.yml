@@ -1,0 +1,166 @@
+# =============================================================================
+# Pravaha Platform - Enterprise Logging Stack
+# Loki + Promtail + Grafana for centralized log management
+# =============================================================================
+#
+# This file adds enterprise-grade logging capabilities to the platform.
+# Logs from all services are collected, aggregated, and viewable via Grafana.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.logging.yml up -d
+#
+# Or add to your main docker-compose.yml to include by default.
+#
+# Access:
+#   - Grafana UI: https://your-domain.com/logs/ (proxied through NGINX)
+#   - Default credentials: admin / admin (change on first login)
+#
+# =============================================================================
+
+# =============================================================================
+# Default Logging Configuration (YAML anchor)
+# Prevents disk exhaustion by rotating logs: max 10MB per file, keep 5 files
+# =============================================================================
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  # ===========================================================================
+  # Loki - Log Aggregation Backend
+  # Receives logs from Promtail and stores them efficiently
+  # ===========================================================================
+  loki:
+    image: grafana/loki:2.9.3
+    container_name: pravaha-loki
+    restart: unless-stopped
+    logging: *default-logging
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./logging/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # Promtail - Log Collector
+  # Collects logs from Docker containers and sends to Loki
+  # ===========================================================================
+  promtail:
+    image: grafana/promtail:2.9.3
+    container_name: pravaha-promtail
+    restart: unless-stopped
+    logging: *default-logging
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./logging/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_positions:/tmp/positions
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9080/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ===========================================================================
+  # Grafana - Log Visualization & Querying
+  # Web UI for viewing and searching logs
+  # NOTE: Uses separate volume (grafana_logs_data) to avoid conflict with
+  # metrics Grafana (grafana_data) when running both stacks together
+  # ===========================================================================
+  grafana-logs:
+    image: grafana/grafana:10.2.3
+    container_name: pravaha-grafana-logs
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${GRAFANA_LOGS_PORT:-3001}:3000"
+    environment:
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/logs/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SECURITY_SECRET_KEY=${GRAFANA_SECRET_KEY:-}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_INSTALL_PLUGINS=
+      - GF_LOG_MODE=console
+      - GF_LOG_LEVEL=${LOG_LEVEL:-info}
+      # Disable some UI features for cleaner log-focused experience
+      - GF_EXPLORE_ENABLED=true
+      - GF_ALERTING_ENABLED=false
+      - GF_UNIFIED_ALERTING_ENABLED=false
+    volumes:
+      - grafana_logs_data:/var/lib/grafana
+      - ./logging/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./logging/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+# =============================================================================
+# Networks (uses network created by main compose file)
+# =============================================================================
+networks:
+  pravaha-network:
+    external: true
+
+# =============================================================================
+# Additional Volumes
+# NOTE: grafana_logs_data is separate from grafana_data (metrics) to avoid conflicts
+# =============================================================================
+volumes:
+  loki_data:
+    driver: local
+  promtail_positions:
+    driver: local
+  grafana_logs_data:
+    driver: local

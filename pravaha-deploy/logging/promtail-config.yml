@@ -1,0 +1,205 @@
+# =============================================================================
+# Promtail Configuration for Pravaha Platform
+# Collects logs from all Docker containers
+# =============================================================================
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    tenant_id: pravaha
+    batchwait: 1s
+    batchsize: 1048576  # 1MB
+    timeout: 10s
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  # ==========================================================================
+  # Docker Container Logs
+  # Automatically discovers and collects logs from all containers
+  # ==========================================================================
+  - job_name: docker_containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project"]
+
+    relabel_configs:
+      # Keep only pravaha containers (by name prefix)
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(pravaha-.+)'
+        action: keep
+
+      # Extract container name
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.+)'
+        target_label: container
+
+      # Extract service name from container name (pravaha-backend -> backend)
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/pravaha-(.+)'
+        target_label: service
+
+      # Add compose project label
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: compose_project
+
+      # Add compose service label
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: compose_service
+
+      # Add container ID
+      - source_labels: ['__meta_docker_container_id']
+        target_label: container_id
+
+      # Set job name
+      - replacement: pravaha
+        target_label: job
+
+      # Set environment label
+      - replacement: production
+        target_label: environment
+
+    pipeline_stages:
+      # =======================================================================
+      # JSON Log Parsing (for structured logs)
+      # Backend, ML-service, Superset, and Celery workers
+      # =======================================================================
+      - match:
+          selector: '{service=~"backend|ml-service|superset|celery-training|celery-prediction|celery-monitoring|celery-beat"}'
+          stages:
+            # Try to parse as JSON
+            - json:
+                expressions:
+                  level: level
+                  message: message
+                  msg: msg
+                  timestamp: timestamp
+                  time: time
+                  error: error
+                  stack: stack
+                  requestId: requestId
+                  userId: userId
+                  tenantId: tenantId
+                  duration: duration
+                  method: method
+                  path: path
+                  statusCode: statusCode
+                  task_id: task_id
+                  task_name: task_name
+                  worker: worker
+                  queue: queue
+
+            # Normalize level field
+            - labels:
+                level:
+
+            # Use message or msg field
+            - template:
+                source: output
+                template: '{{ if .message }}{{ .message }}{{ else if .msg }}{{ .msg }}{{ else }}{{ .Entry }}{{ end }}'
+
+            # Add structured fields as labels
+            - labels:
+                requestId:
+                userId:
+                tenantId:
+                method:
+                path:
+                task_id:
+                task_name:
+                worker:
+                queue:
+
+      # =======================================================================
+      # Celery Log Parsing (for standard Celery log format)
+      # Format: [YYYY-MM-DD HH:MM:SS,mmm: LEVEL/PROCESS] message
+      # =======================================================================
+      - match:
+          selector: '{service=~"celery-.*"}'
+          stages:
+            - regex:
+                expression: '^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}): (?P<level>\w+)/(?P<process>\w+(-\d+)?)\] (?P<message>.*)'
+            - labels:
+                level:
+                process:
+            - template:
+                source: output
+                template: '{{ .message }}'
+            # Extract task information from Celery task logs
+            - regex:
+                expression: 'Task (?P<task_name>[\w.]+)\[(?P<task_id>[^\]]+)\]'
+            - labels:
+                task_name:
+                task_id:
+
+      # =======================================================================
+      # NGINX Log Parsing
+      # =======================================================================
+      - match:
+          selector: '{service="nginx"}'
+          stages:
+            - regex:
+                expression: '^(?P<remote_addr>[\d.]+) - (?P<remote_user>\S+) \[(?P<time_local>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+) (?P<protocol>\S+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)"'
+            - labels:
+                method:
+                path:
+                status:
+            - template:
+                source: level
+                template: '{{ if eq .status "5" }}error{{ else if eq .status "4" }}warn{{ else }}info{{ end }}'
+            - labels:
+                level:
+
+      # =======================================================================
+      # PostgreSQL Log Parsing
+      # =======================================================================
+      - match:
+          selector: '{service="postgres"}'
+          stages:
+            - regex:
+                expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.\d+ \w+) \[(?P<pid>\d+)\] (?P<level>\w+):'
+            - labels:
+                level:
+
+      # =======================================================================
+      # Redis Log Parsing
+      # =======================================================================
+      - match:
+          selector: '{service="redis"}'
+          stages:
+            - regex:
+                expression: '^\d+:\w+ (?P<timestamp>\d+ \w+ \d{4} \d{2}:\d{2}:\d{2}.\d+) (?P<level>\*|#|-|\.)'
+            - template:
+                source: level
+                template: '{{ if eq .level "*" }}info{{ else if eq .level "#" }}warn{{ else if eq .level "-" }}debug{{ else }}info{{ end }}'
+            - labels:
+                level:
+
+      # =======================================================================
+      # Timestamp Parsing
+      # =======================================================================
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+          fallback_formats:
+            - RFC3339Nano
+            - '2006-01-02T15:04:05.000Z07:00'
+            - '2006-01-02 15:04:05.000 MST'
+            - UnixMs
+
+      # =======================================================================
+      # Output Stage
+      # =======================================================================
+      - output:
+          source: output

@@ -1,0 +1,235 @@
+# =============================================================================
+# Filebeat Configuration - Docker Log Collection
+# Pravaha Platform Enterprise Logging
+# =============================================================================
+
+# Filebeat configuration
+filebeat.config:
+  modules:
+    path: ${path.config}/modules.d/*.yml
+    reload.enabled: false
+
+# Autodiscover Docker containers
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      # Match all running containers
+      hints.enabled: true
+      hints.default_config:
+        type: container
+        paths:
+          - /var/lib/docker/containers/${data.container.id}/*.log
+
+      # Container templates for specific services
+      templates:
+        # NGINX
+        - condition:
+            contains:
+              docker.container.name: nginx
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: nginx
+              fields_under_root: true
+
+        # Frontend
+        - condition:
+            contains:
+              docker.container.name: frontend
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: frontend
+              fields_under_root: true
+
+        # Backend
+        - condition:
+            contains:
+              docker.container.name: backend
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: backend
+              fields_under_root: true
+
+        # Superset
+        - condition:
+            contains:
+              docker.container.name: superset
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: superset
+              fields_under_root: true
+
+        # ML Service
+        - condition:
+            contains:
+              docker.container.name: ml-service
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: ml-service
+              fields_under_root: true
+
+        # Celery Training
+        - condition:
+            contains:
+              docker.container.name: celery-training
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: celery-training
+              fields_under_root: true
+
+        # Celery Prediction
+        - condition:
+            contains:
+              docker.container.name: celery-prediction
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: celery-prediction
+              fields_under_root: true
+
+        # Celery Monitoring
+        - condition:
+            contains:
+              docker.container.name: celery-monitoring
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: celery-monitoring
+              fields_under_root: true
+
+        # Celery Beat
+        - condition:
+            contains:
+              docker.container.name: celery-beat
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: celery-beat
+              fields_under_root: true
+
+        # PostgreSQL
+        - condition:
+            contains:
+              docker.container.name: postgres
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: postgres
+              fields_under_root: true
+
+        # Redis
+        - condition:
+            contains:
+              docker.container.name: redis
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.container.id}/*.log
+              fields:
+                pravaha_service: redis
+              fields_under_root: true
+
+# Processors for log enrichment
+processors:
+  # Add Docker metadata
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+      match_fields: ["container.id"]
+      labels.dedot: true
+
+  # Add host metadata
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+
+  # Add cloud metadata (if applicable)
+  - add_cloud_metadata: ~
+
+  # Drop events from ELK stack containers (avoid feedback loop)
+  - drop_event:
+      when:
+        or:
+          - contains:
+              container.name: elasticsearch
+          - contains:
+              container.name: logstash
+          - contains:
+              container.name: kibana
+          - contains:
+              container.name: filebeat
+          - contains:
+              container.name: elk-setup
+
+  # Decode JSON in container logs
+  - decode_json_fields:
+      fields: ["message"]
+      process_array: false
+      max_depth: 2
+      target: ""
+      overwrite_keys: false
+      add_error_key: true
+      when:
+        regexp:
+          message: '^\{.*\}$'
+
+# Output to Logstash
+output.logstash:
+  hosts: ["logstash:5044"]
+  loadbalance: true
+  compression_level: 3
+
+  # Connection settings
+  timeout: 30s
+  pipelining: 2
+  bulk_max_size: 2048
+
+  # Backoff settings for reconnection
+  backoff.init: 1s
+  backoff.max: 60s
+
+# Logging configuration
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /usr/share/filebeat/logs
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+logging.metrics.enabled: false
+
+# Monitoring (disabled to reduce overhead)
+monitoring.enabled: false
+
+# Queue settings (in-memory for performance)
+queue.mem:
+  events: 4096
+  flush.min_events: 512
+  flush.timeout: 1s
+
+# Path configuration
+path.data: /usr/share/filebeat/data
+path.logs: /usr/share/filebeat/logs

@@ -1,0 +1,82 @@
+# =============================================================================
+# Pravaha Platform - Local Build Docker Compose
+# Use this when you don't have access to the container registry
+# =============================================================================
+#
+# Usage:
+#   docker compose -f docker-compose.build.yml build
+#   docker compose -f docker-compose.build.yml up -d
+#
+# Or combine with main compose:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# =============================================================================
+
+services:
+  frontend:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/frontend.Dockerfile
+      args:
+        - VITE_API_BASE_URL=/api/v1
+        - VITE_SUPERSET_CONTEXT_PATH=/insights
+        - BRAND=${BRAND:-pravaha}
+        - VERSION=${IMAGE_TAG:-latest}
+        - BUILD_DATE=${BUILD_DATE:-}
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+      args:
+        - VERSION=${IMAGE_TAG:-latest}
+        - BUILD_DATE=${BUILD_DATE:-}
+
+  superset:
+    build:
+      context: ../../superset
+      dockerfile: Dockerfile
+      args:
+        - VERSION=${IMAGE_TAG:-latest}
+        - BUILD_DATE=${BUILD_DATE:-}
+
+  ml-service:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/ml-service.Dockerfile
+      args:
+        - VERSION=${IMAGE_TAG:-latest}
+        - BUILD_DATE=${BUILD_DATE:-}
+
+  # Celery workers use the same image as ml-service
+  celery-worker-training:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/ml-service.Dockerfile
+      args:
+        - VERSION=${IMAGE_TAG:-latest}
+        - BUILD_DATE=${BUILD_DATE:-}
+
+  celery-worker-prediction:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/ml-service.Dockerfile
+      args:
+        - VERSION=${IMAGE_TAG:-latest}
+        - BUILD_DATE=${BUILD_DATE:-}
+
+  celery-worker-monitoring:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/ml-service.Dockerfile
+      args:
+        - VERSION=${IMAGE_TAG:-latest}
+        - BUILD_DATE=${BUILD_DATE:-}
+
+  celery-beat:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/ml-service.Dockerfile
+      args:
+        - VERSION=${IMAGE_TAG:-latest}
+        - BUILD_DATE=${BUILD_DATE:-}

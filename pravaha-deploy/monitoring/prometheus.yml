@@ -1,0 +1,264 @@
+# =============================================================================
+# Prometheus Configuration
+# Pravaha Platform - Single Server Deployment
+# =============================================================================
+#
+# This configuration scrapes metrics from:
+#   - ML Service (FastAPI with prometheus_client)
+#   - Backend (Node.js with prom-client)
+#   - PostgreSQL (via postgres-exporter)
+#   - Redis (via redis-exporter)
+#   - Host system (via node-exporter)
+#   - Prometheus itself
+#
+# Alert rules are loaded from ./alerts/*.yml
+#
+# =============================================================================
+
+global:
+  # How frequently to scrape targets
+  scrape_interval: 15s
+  # How frequently to evaluate rules
+  evaluation_interval: 15s
+  # Attach these labels to any time series or alerts when communicating with
+  # external systems (federation, remote storage, Alertmanager)
+  external_labels:
+    cluster: 'pravaha-single-server'
+    environment: 'production'
+
+# =============================================================================
+# Alertmanager Configuration
+# =============================================================================
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+      # Timeout for alertmanager requests
+      timeout: 10s
+      # Path prefix for alertmanager API
+      path_prefix: /
+
+# =============================================================================
+# Rule Files
+# Load alert rules from the alerts directory
+# =============================================================================
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+# =============================================================================
+# Scrape Configurations
+# =============================================================================
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # Prometheus Self-Monitoring
+  # ---------------------------------------------------------------------------
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # ---------------------------------------------------------------------------
+  # ML Service (FastAPI)
+  # Python ML service with prometheus_fastapi_instrumentator
+  # ---------------------------------------------------------------------------
+  - job_name: 'ml-service'
+    static_configs:
+      - targets: ['ml-service:8001']
+    metrics_path: /api/v1/metrics
+    scrape_interval: 15s
+    scrape_timeout: 15s
+    # Add service labels
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'ml-service'
+      - target_label: service
+        replacement: 'ml-service'
+      - target_label: component
+        replacement: 'api'
+
+  # ---------------------------------------------------------------------------
+  # Backend (Node.js)
+  # Express backend with prom-client
+  # ---------------------------------------------------------------------------
+  - job_name: 'backend'
+    static_configs:
+      - targets: ['backend:3000']
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'backend'
+      - target_label: service
+        replacement: 'backend'
+      - target_label: component
+        replacement: 'api'
+
+  # ---------------------------------------------------------------------------
+  # Superset (BI Platform)
+  # Apache Superset analytics and visualization
+  # ---------------------------------------------------------------------------
+  - job_name: 'superset'
+    static_configs:
+      - targets: ['superset:8088']
+    metrics_path: /health
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'superset'
+      - target_label: service
+        replacement: 'superset'
+      - target_label: component
+        replacement: 'bi'
+
+  # ---------------------------------------------------------------------------
+  # Celery Workers (if they expose metrics)
+  # Note: Requires flower or celery-prometheus-exporter
+  # ---------------------------------------------------------------------------
+  # - job_name: 'celery'
+  #   static_configs:
+  #     - targets: ['celery-flower:5555']
+  #   metrics_path: /metrics
+  #   scrape_interval: 30s
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Exporter
+  # Database metrics via postgres-exporter
+  # ---------------------------------------------------------------------------
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    metrics_path: /metrics
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'postgres'
+      - target_label: service
+        replacement: 'postgres'
+      - target_label: component
+        replacement: 'database'
+
+  # ---------------------------------------------------------------------------
+  # Redis Exporter
+  # Cache and queue metrics via redis-exporter
+  # ---------------------------------------------------------------------------
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'redis'
+      - target_label: service
+        replacement: 'redis'
+      - target_label: component
+        replacement: 'cache'
+
+  # ---------------------------------------------------------------------------
+  # Node Exporter
+  # Host system metrics (CPU, memory, disk, network)
+  # ---------------------------------------------------------------------------
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'host'
+      - target_label: service
+        replacement: 'node'
+      - target_label: component
+        replacement: 'infrastructure'
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager
+  # Monitor the alertmanager itself
+  # ---------------------------------------------------------------------------
+  - job_name: 'alertmanager'
+    static_configs:
+      - targets: ['alertmanager:9093']
+    metrics_path: /metrics
+    scrape_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'alertmanager'
+      - target_label: service
+        replacement: 'alertmanager'
+      - target_label: component
+        replacement: 'monitoring'
+
+  # ---------------------------------------------------------------------------
+  # Grafana
+  # Monitor Grafana performance
+  # ---------------------------------------------------------------------------
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+    metrics_path: /metrics
+    scrape_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'grafana'
+      - target_label: service
+        replacement: 'grafana'
+      - target_label: component
+        replacement: 'monitoring'
+
+  # ---------------------------------------------------------------------------
+  # Docker Daemon (if Docker metrics are enabled)
+  # Requires Docker daemon to expose metrics
+  # Enable in /etc/docker/daemon.json: {"metrics-addr": "0.0.0.0:9323"}
+  # ---------------------------------------------------------------------------
+  # - job_name: 'docker'
+  #   static_configs:
+  #     - targets: ['host.docker.internal:9323']
+  #   metrics_path: /metrics
+  #   scrape_interval: 30s
+
+  # ---------------------------------------------------------------------------
+  # NGINX (if nginx-prometheus-exporter is deployed)
+  # ---------------------------------------------------------------------------
+  # - job_name: 'nginx'
+  #   static_configs:
+  #     - targets: ['nginx-exporter:9113']
+  #   metrics_path: /metrics
+  #   scrape_interval: 15s
+
+# =============================================================================
+# Remote Write (Optional)
+# Send metrics to external Prometheus-compatible storage
+# =============================================================================
+# remote_write:
+#   - url: "https://prometheus-remote-write.example.com/api/v1/write"
+#     basic_auth:
+#       username: "prometheus"
+#       password: "secret"
+#     write_relabel_configs:
+#       - source_labels: [__name__]
+#         regex: 'go_.*'
+#         action: drop
+
+# =============================================================================
+# Remote Read (Optional)
+# Read metrics from external Prometheus-compatible storage
+# =============================================================================
+# remote_read:
+#   - url: "https://prometheus-remote-read.example.com/api/v1/read"
+#     read_recent: true

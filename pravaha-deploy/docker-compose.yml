@@ -1,0 +1,640 @@
+# =============================================================================
+# Pravaha Platform - Single Server Docker Compose
+# All-in-one deployment for single server/VM
+# =============================================================================
+#
+# Usage:
+#   Option 1 - Pull from registry:
+#     1. Copy .env.example to .env and configure
+#     2. Generate NGINX config: ./scripts/generate-nginx-config.sh
+#     3. Run: docker compose up -d
+#
+#   Option 2 - Build locally:
+#     1. Copy .env.example to .env and configure
+#     2. Generate NGINX config: ./scripts/generate-nginx-config.sh
+#     3. Run: docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# Environment:
+#   All services read from .env file (Single Source of Truth)
+#   Copy .env.example to .env and update values before starting
+#
+# Services:
+#   - nginx: Reverse proxy with SSL termination
+#   - frontend: React SPA
+#   - backend: Node.js API
+#   - superset: Apache Superset BI
+#   - ml-service: Python ML API service
+#   - celery-worker-training: ML model training background jobs
+#   - celery-worker-prediction: ML prediction background jobs
+#   - celery-worker-monitoring: Monitoring and alerting jobs
+#   - celery-beat: Scheduled task scheduler
+#   - postgres: PostgreSQL database (shared)
+#   - redis: Redis cache and Celery broker
+#
+# =============================================================================
+
+# =============================================================================
+# Default Logging Configuration (YAML anchor)
+# Prevents disk exhaustion by rotating logs: max 10MB per file, keep 5 files
+# =============================================================================
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  # ===========================================================================
+  # NGINX Reverse Proxy
+  # Handles SSL termination and routes to services
+  # ===========================================================================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: pravaha-nginx
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Pass variables for nginx template substitution
+      # nginx:alpine auto-processes .template files in /etc/nginx/templates/
+      - DOMAIN=${DOMAIN}
+      - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-500}
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Mount template to /etc/nginx/templates/ for auto-processing with envsubst
+      # nginx:alpine will generate /etc/nginx/conf.d/pravaha.conf from the template
+      - ./nginx/conf.d/pravaha.conf.template:/etc/nginx/templates/pravaha.conf.template:ro
+      # Override nginx's built-in default.conf to prevent health check conflicts
+      - ./nginx/conf.d/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+      # For Let's Encrypt ACME challenge (certificate renewal)
+      - certbot_www:/var/www/certbot:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      superset:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      # Use wget since nginx:alpine doesn't have curl
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ===========================================================================
+  # Frontend - React SPA
+  # ===========================================================================
+  frontend:
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}frontend:${IMAGE_TAG:-latest}
+    container_name: pravaha-frontend
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - BRAND=${BRAND:-pravaha}
+      - BRAND_NAME=${BRAND_NAME:-Pravaha}
+      - BRAND_CONFIG=${BRAND_CONFIG:-}
+    volumes:
+      - ./branding:/app/branding:ro
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      # Use /health endpoint defined in nginx-frontend.conf
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Backend - Node.js API
+  # ===========================================================================
+  backend:
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}backend:${IMAGE_TAG:-latest}
+    container_name: pravaha-backend
+    restart: unless-stopped
+    logging: *default-logging
+    env_file:
+      - .env
+    environment:
+      # Branding
+      - BRAND=${BRAND:-pravaha}
+      - BRAND_NAME=${BRAND_NAME:-Pravaha}
+      - BRAND_CONFIG=${BRAND_CONFIG:-}
+      # License Management
+      - LICENSE_PUBLIC_KEY_PATH=${LICENSE_PUBLIC_KEY_PATH:-}
+      - LICENSE_SUPPORT_EMAIL=${LICENSE_SUPPORT_EMAIL:-}
+      - LICENSE_ENFORCEMENT_MODE=${LICENSE_ENFORCEMENT_MODE:-disabled}
+      # Database connection - uses POSTGRES_HOST variable for external DB support
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
+      # Docker-specific overrides (container network URLs)
+      - SUPERSET_API_URL=http://superset:8088
+      - ML_SERVICE_URL=http://ml-service:8001
+      # Audit key paths (mounted files)
+      - AUDIT_PRIVATE_KEY=/app/audit-private.pem
+      - AUDIT_PUBLIC_KEY=/app/audit-public.pem
+      # Schema sync directory for context generation
+      - SCHEMA_SYNC_DIR=/app/workflow-configs
+      # Redis cache (use DB 0 for backend)
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}/0
+      - INTERNAL_SERVICE_KEY=${INTERNAL_SERVICE_KEY:-dev-internal-service-key-2025-not-for-production}
+    volumes:
+      - uploads:/app/uploads
+      - app_logs:/app/logs
+      - workflow_configs:/app/workflow-configs
+      - ./audit-private.pem:/app/audit-private.pem:ro
+      - ./audit-public.pem:/app/audit-public.pem:ro
+      - ./branding:/app/branding:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      # Use /health/live for Docker liveness check (always 200 if app is running)
+      # Use /health for detailed status, /health/ready for readiness
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ===========================================================================
+  # Superset - BI & Analytics
+  # ===========================================================================
+  superset:
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}superset:${IMAGE_TAG:-latest}
+    container_name: pravaha-superset
+    restart: unless-stopped
+    logging: *default-logging
+    env_file:
+      - .env
+    environment:
+      # Superset-specific configuration
+      - SUPERSET_ENV=production
+      # Superset uses different database (superset db in same postgres)
+      # Uses POSTGRES_HOST variable for external DB support (defaults to 'postgres' container)
+      - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${SUPERSET_DB:-superset}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
+      # Platform database for ML analytics dashboards (ml_predictions, ml_models, etc.)
+      - PLATFORM_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
+      # Superset uses different Redis DB
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}/1
+      # Backend URL for platform integration
+      - PLATFORM_API_BASE=http://backend:3000
+    volumes:
+      - superset_home:/app/superset_home
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+
+  # ===========================================================================
+  # ML Service - Python FastAPI API Server
+  # ===========================================================================
+  ml-service:
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    container_name: pravaha-ml-service
+    restart: unless-stopped
+    logging: *default-logging
+    env_file:
+      - .env
+    environment:
+      # Branding
+      - BRAND=${BRAND:-pravaha}
+      - BRAND_NAME=${BRAND_NAME:-Pravaha}
+      - BRAND_CONFIG=${BRAND_CONFIG:-}
+      # Map JWT_SECRET to JWT_SECRET_KEY (ML service expects JWT_SECRET_KEY)
+      - JWT_SECRET_KEY=${JWT_SECRET}
+      # Database connection - uses POSTGRES_HOST variable for external DB support
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
+      # ML Service uses different Redis DB for cache
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}/2
+      # Celery uses another Redis DB
+      - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379}/3
+      - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379}/3
+      # ML Storage path for uploaded datasets
+      - ML_STORAGE_PATH=${ML_STORAGE_PATH:-/data/ml-storage}
+      - INTERNAL_SERVICE_KEY=${INTERNAL_SERVICE_KEY:-dev-internal-service-key-2025-not-for-production}
+    volumes:
+      - ml_models:/app/models
+      - ml_logs:/app/logs
+      - training_data:/app/training_data
+      - ml_storage:/data/ml-storage
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 6G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  # ===========================================================================
+  # Celery Worker - Training Jobs
+  # Handles ML model training tasks (long-running)
+  # ===========================================================================
+  celery-worker-training:
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    container_name: pravaha-celery-training
+    restart: unless-stopped
+    logging: *default-logging
+    # Graceful shutdown: SIGTERM triggers worker to finish current task before stopping
+    stop_signal: SIGTERM
+    # Allow 10 minutes for long-running training jobs to complete gracefully
+    stop_grace_period: 600s
+    command: >
+      celery -A src.celery_app:celery_app worker
+      --loglevel=info
+      -Q training,training.high_priority
+      -n training_worker@%h
+      --concurrency=${CELERY_TRAINING_CONCURRENCY:-4}
+      --prefetch-multiplier=1
+    env_file:
+      - .env
+    environment:
+      # Map JWT_SECRET to JWT_SECRET_KEY (ML service expects JWT_SECRET_KEY)
+      - JWT_SECRET_KEY=${JWT_SECRET}
+      # Database connection - uses POSTGRES_HOST variable for external DB support
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
+      # Celery uses specific Redis DBs
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}/2
+      - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379}/3
+      - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379}/3
+      # Graceful shutdown settings
+      - CELERY_WORKER_HIJACK_ROOT_LOGGER=false
+      # ML Storage path for uploaded datasets
+      - ML_STORAGE_PATH=${ML_STORAGE_PATH:-/data/ml-storage}
+    volumes:
+      - ml_models:/app/models
+      - ml_logs:/app/logs
+      - training_data:/app/training_data
+      - ml_storage:/data/ml-storage
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    healthcheck:
+      # Use celery inspect with longer timeout, fallback to process check
+      test: ["CMD-SHELL", "celery -A src.celery_app:celery_app inspect ping -d training_worker@$$(hostname) --timeout=10 2>/dev/null || pgrep -f 'celery.*training_worker' > /dev/null"]
+      interval: 60s
+      timeout: 45s
+      retries: 3
+      start_period: 90s
+
+  # ===========================================================================
+  # Celery Worker - Prediction Jobs
+  # Handles ML prediction and batch processing tasks
+  # ===========================================================================
+  celery-worker-prediction:
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    container_name: pravaha-celery-prediction
+    restart: unless-stopped
+    logging: *default-logging
+    # Graceful shutdown for in-flight predictions
+    stop_signal: SIGTERM
+    # Allow 2 minutes for prediction tasks to complete
+    stop_grace_period: 120s
+    command: >
+      celery -A src.celery_app:celery_app worker
+      --loglevel=info
+      -Q prediction,prediction.high_priority,batch
+      -n prediction_worker@%h
+      --concurrency=${CELERY_PREDICTION_CONCURRENCY:-4}
+      --prefetch-multiplier=1
+    env_file:
+      - .env
+    environment:
+      # Map JWT_SECRET to JWT_SECRET_KEY (ML service expects JWT_SECRET_KEY)
+      - JWT_SECRET_KEY=${JWT_SECRET}
+      # Database connection - uses POSTGRES_HOST variable for external DB support
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
+      # Celery uses specific Redis DBs
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}/2
+      - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379}/3
+      - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379}/3
+      # Graceful shutdown settings
+      - CELERY_WORKER_HIJACK_ROOT_LOGGER=false
+      # ML Storage path for uploaded datasets
+      - ML_STORAGE_PATH=${ML_STORAGE_PATH:-/data/ml-storage}
+    volumes:
+      - ml_models:/app/models
+      - ml_logs:/app/logs
+      - training_data:/app/training_data
+      - ml_storage:/data/ml-storage
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      # Use celery inspect with longer timeout, fallback to process check
+      test: ["CMD-SHELL", "celery -A src.celery_app:celery_app inspect ping -d prediction_worker@$$(hostname) --timeout=10 2>/dev/null || pgrep -f 'celery.*prediction_worker' > /dev/null"]
+      interval: 60s
+      timeout: 45s
+      retries: 3
+      start_period: 60s
+
+  # ===========================================================================
+  # Celery Worker - Monitoring Jobs
+  # Handles monitoring, alerting, analytics, and maintenance tasks
+  # ===========================================================================
+  celery-worker-monitoring:
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    container_name: pravaha-celery-monitoring
+    restart: unless-stopped
+    logging: *default-logging
+    # Graceful shutdown for monitoring tasks
+    stop_signal: SIGTERM
+    # Allow 1 minute for monitoring tasks to complete
+    stop_grace_period: 60s
+    command: >
+      celery -A src.celery_app:celery_app worker
+      --loglevel=info
+      -Q monitoring,alerting,analytics,maintenance
+      -n monitoring_worker@%h
+      --concurrency=${CELERY_MONITORING_CONCURRENCY:-2}
+      --prefetch-multiplier=1
+    env_file:
+      - .env
+    environment:
+      # Map JWT_SECRET to JWT_SECRET_KEY (ML service expects JWT_SECRET_KEY)
+      - JWT_SECRET_KEY=${JWT_SECRET}
+      # Database connection - uses POSTGRES_HOST variable for external DB support
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
+      # Celery uses specific Redis DBs
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}/2
+      - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379}/3
+      - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379}/3
+      # Graceful shutdown settings
+      - CELERY_WORKER_HIJACK_ROOT_LOGGER=false
+    volumes:
+      - ml_models:/app/models
+      - ml_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      # Use celery inspect with longer timeout, fallback to process check
+      test: ["CMD-SHELL", "celery -A src.celery_app:celery_app inspect ping -d monitoring_worker@$$(hostname) --timeout=10 2>/dev/null || pgrep -f 'celery.*monitoring_worker' > /dev/null"]
+      interval: 60s
+      timeout: 45s
+      retries: 3
+      start_period: 60s
+
+  # ===========================================================================
+  # Celery Beat - Task Scheduler
+  # Runs scheduled/periodic tasks (model retraining, cleanup, etc.)
+  # ===========================================================================
+  celery-beat:
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    container_name: pravaha-celery-beat
+    restart: unless-stopped
+    logging: *default-logging
+    # Graceful shutdown for scheduler
+    stop_signal: SIGTERM
+    # Quick shutdown for beat - it only schedules, doesn't execute
+    stop_grace_period: 15s
+    command: >
+      celery -A src.celery_app:celery_app beat
+      --loglevel=info
+      --pidfile=/tmp/celerybeat.pid
+      --schedule=/tmp/celerybeat-schedule
+    env_file:
+      - .env
+    environment:
+      # Map JWT_SECRET to JWT_SECRET_KEY (ML service expects JWT_SECRET_KEY)
+      - JWT_SECRET_KEY=${JWT_SECRET}
+      # Database connection - uses POSTGRES_HOST variable for external DB support
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
+      # Celery uses specific Redis DBs
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}/2
+      - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379}/3
+      - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379}/3
+    volumes:
+      - ml_logs:/app/logs
+      # Persist schedule database to avoid duplicate task dispatch on restart
+      - celery_beat_schedule:/tmp
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    healthcheck:
+      # Check if beat process is running via PID file
+      test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid) 2>/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # PostgreSQL - Single database server (Optional - Bundled Mode Only)
+  # Contains both platform and superset databases
+  # Only started when using bundled mode: docker compose --profile bundled-db up
+  # For external PostgreSQL, set POSTGRES_HOST in .env and don't use this profile
+  # ===========================================================================
+  postgres:
+    image: postgres:17-alpine
+    container_name: pravaha-postgres
+    profiles:
+      - bundled-db
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${PLATFORM_DB}
+      # Security: Use scram-sha-256 authentication (default in PostgreSQL 15+)
+      - POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+      # Additional databases created via init script
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${PLATFORM_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ===========================================================================
+  # Redis - Cache and Job Queue
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: pravaha-redis
+    restart: unless-stopped
+    logging: *default-logging
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory ${REDIS_MAXMEMORY:-512mb}
+      --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
+      --stop-writes-on-bgsave-error no
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+    # Note: To suppress "Memory overcommit" warning, run on host:
+    # sudo sysctl vm.overcommit_memory=1 (temporary)
+    # echo 'vm.overcommit_memory=1' | sudo tee -a /etc/sysctl.conf (permanent)
+    volumes:
+      - redis_data:/data
+    networks:
+      - pravaha-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      # Health check works with or without password
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a ${REDIS_PASSWORD}} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  pravaha-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  superset_home:
+    driver: local
+  ml_models:
+    driver: local
+  ml_logs:
+    driver: local
+  ml_storage:
+    driver: local
+  training_data:
+    driver: local
+  uploads:
+    driver: local
+  app_logs:
+    driver: local
+  nginx_logs:
+    driver: local
+  certbot_www:
+    driver: local
+  # Celery beat schedule persistence to prevent duplicate tasks on restart
+  celery_beat_schedule:
+    driver: local
+  # Workflow config schemas synced from frontend for context generation
+  workflow_configs:
+    driver: local
