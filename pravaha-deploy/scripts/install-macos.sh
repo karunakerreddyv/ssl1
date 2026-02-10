@@ -693,7 +693,7 @@ authenticate_registry() {
     # Determine registry type and authenticate accordingly
     if [[ "$registry" == ghcr.io/* ]]; then
         # GitHub Container Registry
-        if [[ -n "$GHCR_TOKEN" ]] && [[ -n "$GHCR_USERNAME" ]]; then
+        if [[ -n "${GHCR_TOKEN:-}" ]] && [[ -n "${GHCR_USERNAME:-}" ]]; then
             log_info "Logging into GitHub Container Registry..."
             if echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin 2>/dev/null; then
                 log_success "GHCR authentication successful"
@@ -738,7 +738,7 @@ authenticate_registry() {
         fi
     else
         # Docker Hub or other registry
-        if [[ -n "$DOCKER_PASSWORD" ]] && [[ -n "$DOCKER_USERNAME" ]]; then
+        if [[ -n "${DOCKER_PASSWORD:-}" ]] && [[ -n "${DOCKER_USERNAME:-}" ]]; then
             log_info "Logging into Docker Hub..."
             if echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin 2>/dev/null; then
                 log_success "Docker Hub authentication successful"
@@ -770,9 +770,18 @@ pull_images() {
         return 1
     fi
 
-    if ! docker compose pull; then
+    if ! docker compose --profile bundled-db pull; then
         log_error "Failed to pull Docker images"
-        log_error "Check your network connectivity and registry access"
+        log_error ""
+        log_error "Troubleshooting steps:"
+        log_error "  1. Check network connectivity: curl -s https://ghcr.io/v2/"
+        log_error "  2. Verify registry access: docker pull ghcr.io/talentfino/pravaha/frontend:latest"
+        log_error "  3. GHCR requires authentication for private images"
+        log_error "  4. Set credentials before running install.sh:"
+        log_error "     export GHCR_USERNAME=your-github-username"
+        log_error "     export GHCR_TOKEN=ghp_your-personal-access-token"
+        log_error ""
+        log_error "You can retry later with: cd $DEPLOY_DIR && docker compose --profile bundled-db pull"
         return 1
     fi
 

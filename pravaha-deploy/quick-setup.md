@@ -282,7 +282,7 @@ cd /opt/pravaha && docker compose ps
 #   pravaha-celery-training    running
 #   pravaha-celery-prediction  running
 #   pravaha-celery-beat        running
-#   pravaha-celery-analytics   running
+#   pravaha-celery-monitoring   running
 ```
 
 ```bash

@@ -1043,14 +1043,14 @@ authenticate_registry() {
     if [[ -f "$deploy_dir/.env" ]]; then
         local registry=$(grep "^REGISTRY=" "$deploy_dir/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
     fi
-    registry="${registry:-karunakervgrc}"
+    registry="${registry:-ghcr.io/talentfino/pravaha}"
 
     log_info "Authenticating with container registry: $registry"
 
     # Determine registry type and authenticate accordingly
     if [[ "$registry" == ghcr.io/* ]]; then
         # GitHub Container Registry
-        if [[ -n "$GHCR_TOKEN" ]] && [[ -n "$GHCR_USERNAME" ]]; then
+        if [[ -n "${GHCR_TOKEN:-}" ]] && [[ -n "${GHCR_USERNAME:-}" ]]; then
             log_info "Logging into GitHub Container Registry..."
             if echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin; then
                 log_success "GHCR authentication successful"
@@ -1107,7 +1107,7 @@ authenticate_registry() {
         fi
     else
         # Docker Hub (default)
-        if [[ -n "$DOCKER_PASSWORD" ]] && [[ -n "$DOCKER_USERNAME" ]]; then
+        if [[ -n "${DOCKER_PASSWORD:-}" ]] && [[ -n "${DOCKER_USERNAME:-}" ]]; then
             log_info "Logging into Docker Hub as $DOCKER_USERNAME..."
             if echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin 2>/dev/null; then
                 log_success "Docker Hub authentication successful"
@@ -1120,9 +1120,10 @@ authenticate_registry() {
         else
             log_info "Docker Hub credentials not provided (DOCKER_USERNAME, DOCKER_PASSWORD)"
             log_info "Anonymous pulls are limited to 100 pulls per 6 hours"
-            log_info "To avoid rate limits, set credentials before running install.sh:"
-            log_info "  export DOCKER_USERNAME=karunakervgrc"
+            log_info "To authenticate, set credentials before running install.sh:"
+            log_info "  export DOCKER_USERNAME=your-dockerhub-username"
             log_info "  export DOCKER_PASSWORD=<your-access-token>"
+            log_info "Or login interactively: docker login -u your-dockerhub-username"
         fi
     fi
 
@@ -1146,12 +1147,13 @@ pull_images() {
         log_error "Failed to pull Docker images after multiple attempts"
         log_error ""
         log_error "Troubleshooting steps:"
-        log_error "  1. Check network connectivity: curl -s https://registry-1.docker.io/v2/"
-        log_error "  2. Verify registry access: docker pull karunakervgrc/pravaha-frontend:latest"
-        log_error "  3. Check Docker Hub rate limits (100 pulls/6hr for anonymous)"
-        log_error "  4. Set credentials to bypass rate limits:"
-        log_error "     export DOCKER_USERNAME=karunakervgrc"
-        log_error "     export DOCKER_PASSWORD=<access-token>"
+        log_error "  1. Check network connectivity: curl -s https://ghcr.io/v2/"
+        log_error "  2. Verify registry access: docker pull ghcr.io/talentfino/pravaha/frontend:latest"
+        log_error "  3. GHCR requires authentication for private images"
+        log_error "  4. Set credentials before running install.sh:"
+        log_error "     export GHCR_USERNAME=your-github-username"
+        log_error "     export GHCR_TOKEN=ghp_your-personal-access-token"
+        log_error "  5. Or login interactively: echo \$GHCR_TOKEN | docker login ghcr.io -u \$GHCR_USERNAME --password-stdin"
         log_error ""
         log_error "You can retry later with: cd $deploy_dir && docker compose pull"
         return 1
@@ -1752,7 +1754,7 @@ main() {
         if [[ "$skip_pull" == "true" ]]; then
             echo "      - SKIPPED (using pre-loaded local images)"
         else
-            echo "      - Pull images from ${REGISTRY:-karunakervgrc}/*:${IMAGE_TAG:-latest}"
+            echo "      - Pull images from ${REGISTRY:-ghcr.io/talentfino/pravaha}/*:${IMAGE_TAG:-latest}"
         fi
         echo ""
         echo "  11. Initialize database"

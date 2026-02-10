@@ -49,9 +49,9 @@ Resource limits are configured in docker-compose.yml:
 | celery-worker-training | 4 cores | 4 GB | CPU-intensive model training |
 | celery-worker-prediction | 2 cores | 2 GB | Batch predictions |
 | celery-worker-monitoring | 1 core | 1 GB | Model monitoring |
-| celery-beat | 0.5 cores | 256 MB | Task scheduler |
+| celery-beat | 1 core | 1 GB | Task scheduler |
 | frontend | 0.5 cores | 256 MB | Static SPA serving |
-| nginx | 0.5 cores | 256 MB | Reverse proxy |
+| nginx | 1 core | 512 MB | Reverse proxy |
 
 ### ELK Stack Requirements (Optional)
 
@@ -277,19 +277,19 @@ docker images | grep single-server
 
 #### Step 2: Tag Images with Expected Names
 
-The docker-compose.yml expects images from Docker Hub (`karunakervgrc/`). Tag your locally built images to match:
+The docker-compose.yml expects images from GHCR (`ghcr.io/talentfino/pravaha/`). Tag your locally built images to match:
 
 ```bash
 # Tag each locally built image with the expected registry name
-# Format: docker tag <local-name>:latest karunakervgrc/pravaha-<service>:latest
+# Format: docker tag <local-name>:latest ghcr.io/talentfino/pravaha/<service>:latest
 
-docker tag single-server-frontend:latest karunakervgrc/pravaha-frontend:latest
-docker tag single-server-backend:latest karunakervgrc/pravaha-backend:latest
-docker tag single-server-ml-service:latest karunakervgrc/pravaha-ml-service:latest
-docker tag single-server-superset:latest karunakervgrc/pravaha-superset:latest
+docker tag single-server-frontend:latest ghcr.io/talentfino/pravaha/frontend:latest
+docker tag single-server-backend:latest ghcr.io/talentfino/pravaha/backend:latest
+docker tag single-server-ml-service:latest ghcr.io/talentfino/pravaha/ml-service:latest
+docker tag single-server-superset:latest ghcr.io/talentfino/pravaha/superset:latest
 
 # Verify tags were applied
-docker images | grep karunakervgrc/pravaha
+docker images | grep ghcr.io/talentfino/pravaha
 ```
 
 #### Step 3: Save Images to Compressed Archives
@@ -300,10 +300,10 @@ mkdir -p pravaha-images
 
 # Save each image to a compressed tar.gz file
 # Using gzip compression to reduce file size for transfer
-docker save karunakervgrc/pravaha-frontend:latest | gzip > pravaha-images/frontend.tar.gz
-docker save karunakervgrc/pravaha-backend:latest | gzip > pravaha-images/backend.tar.gz
-docker save karunakervgrc/pravaha-ml-service:latest | gzip > pravaha-images/ml-service.tar.gz
-docker save karunakervgrc/pravaha-superset:latest | gzip > pravaha-images/superset.tar.gz
+docker save ghcr.io/talentfino/pravaha/frontend:latest | gzip > pravaha-images/frontend.tar.gz
+docker save ghcr.io/talentfino/pravaha/backend:latest | gzip > pravaha-images/backend.tar.gz
+docker save ghcr.io/talentfino/pravaha/ml-service:latest | gzip > pravaha-images/ml-service.tar.gz
+docker save ghcr.io/talentfino/pravaha/superset:latest | gzip > pravaha-images/superset.tar.gz
 
 # Check the file sizes (typically 100MB-500MB each)
 ls -lh pravaha-images/
@@ -338,7 +338,7 @@ gunzip -c /tmp/pravaha-images/ml-service.tar.gz | docker load
 gunzip -c /tmp/pravaha-images/superset.tar.gz | docker load
 
 # Verify images are loaded with correct tags
-docker images | grep karunakervgrc/pravaha
+docker images | grep ghcr.io/talentfino/pravaha
 
 # Clean up the temporary image archives (optional)
 rm -rf /tmp/pravaha-images
@@ -365,8 +365,8 @@ For experienced users, here's a condensed workflow:
 cd /path/to/pravaha && \
 docker compose -f deploy/single-server/docker-compose.yml -f deploy/single-server/docker-compose.build.yml build && \
 for svc in frontend backend ml-service superset; do \
-  docker tag single-server-$svc:latest karunakervgrc/pravaha-$svc:latest && \
-  docker save karunakervgrc/pravaha-$svc:latest | gzip > $svc.tar.gz; \
+  docker tag single-server-$svc:latest ghcr.io/talentfino/pravaha/$svc:latest && \
+  docker save ghcr.io/talentfino/pravaha/$svc:latest | gzip > $svc.tar.gz; \
 done
 
 # Transfer to server
@@ -430,8 +430,8 @@ nslookup your-domain.com
 #### 3. Credentials (Optional - for private images or rate limit bypass)
 ```bash
 # Set before running install.sh
-export DOCKER_USERNAME=karunakervgrc
-export DOCKER_PASSWORD=<docker-hub-access-token>
+export GHCR_USERNAME=your-github-username
+export GHCR_TOKEN=<github-personal-access-token>
 ```
 
 ---
@@ -528,11 +528,11 @@ curl -k https://localhost/insights/health
 
 #### 3. Verify Image Sources
 ```bash
-docker images | grep karunakervgrc
-# Expected: All 4 images from karunakervgrc/pravaha-*
+docker images | grep ghcr.io/talentfino/pravaha
+# Expected: All 4 images from ghcr.io/talentfino/pravaha/*
 
 # Verify architecture
-docker inspect karunakervgrc/pravaha-frontend:latest --format='{{.Architecture}}'
+docker inspect ghcr.io/talentfino/pravaha/frontend:latest --format='{{.Architecture}}'
 # Expected: amd64 (for standard servers) or arm64 (for ARM servers)
 ```
 
@@ -1283,8 +1283,8 @@ curl -I https://registry-1.docker.io/v2/
 docker login
 
 # Try pulling manually with explicit registry
-docker pull karunakervgrc/pravaha-frontend:latest
-docker pull karunakervgrc/pravaha-backend:latest
+docker pull ghcr.io/talentfino/pravaha/frontend:latest
+docker pull ghcr.io/talentfino/pravaha/backend:latest
 
 # Check Docker Hub rate limit status
 curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" | jq -r .token | \
@@ -1292,9 +1292,9 @@ curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repositor
   grep -i ratelimit
 
 # Authenticate to bypass rate limits (100 pulls/6hr for anonymous)
-export DOCKER_USERNAME=karunakervgrc
-export DOCKER_PASSWORD=<your-access-token>
-echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+export GHCR_USERNAME=your-github-username
+export GHCR_TOKEN=<your-github-personal-access-token>
+echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
 
 # For air-gapped deployments, use local images
 sudo ./scripts/install.sh --domain your-domain.com --skip-pull

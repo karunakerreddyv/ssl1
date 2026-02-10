@@ -20,7 +20,7 @@ Complete checklist and setup commands for Ubuntu 22.04 LTS single-server deploym
 | celery-worker-training | 4 cores | 4 GB | Model training (CPU intensive) |
 | celery-worker-prediction | 2 cores | 2 GB | Batch predictions |
 | celery-worker-monitoring | 1 core | 1 GB | Monitoring/alerting |
-| celery-beat | 0.5 cores | 256 MB | Task scheduler |
+| celery-beat | 1 core | 1 GB | Task scheduler |
 | Other services | 4 cores | 6 GB | Backend, frontend, superset, etc. |
 
 ## Network Requirements

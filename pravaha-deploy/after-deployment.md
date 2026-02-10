@@ -26,7 +26,7 @@ docker compose ps
 curl -k https://your-domain.example.com/health
 
 # Test Backend API health
-curl -k https://your-domain.example.com/api/health
+curl -k https://your-domain.example.com/api/v1/health
 
 # Test ML Service health
 curl -k https://your-domain.example.com/ml/api/v1/health

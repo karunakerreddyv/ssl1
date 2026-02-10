@@ -249,7 +249,7 @@ This is the heart of the deployment. It defines:
 Example service definition:
 ```yaml
 backend:
-  image: ${REGISTRY}/pravaha-backend:${IMAGE_TAG}
+  image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}backend:${IMAGE_TAG:-latest}
   container_name: pravaha-backend
   restart: unless-stopped
   depends_on:
@@ -523,10 +523,10 @@ See [Section 7](#7-ssl-certificate-options) for detailed SSL options.
 Downloads container images with retry logic:
 ```bash
 # Images pulled:
-- pravaha-frontend:latest
-- pravaha-backend:latest
-- pravaha-superset:latest
-- pravaha-ml-service:latest
+- ghcr.io/talentfino/pravaha/frontend:latest
+- ghcr.io/talentfino/pravaha/backend:latest
+- ghcr.io/talentfino/pravaha/superset:latest
+- ghcr.io/talentfino/pravaha/ml-service:latest
 - postgres:17-alpine
 - redis:7-alpine
 - nginx:1.25-alpine
@@ -804,12 +804,12 @@ echo | openssl s_client -connect pravaha.yourcompany.com:443 2>/dev/null | opens
 | backend | 2 | 2 GB | API processing |
 | postgres | 2 | 2 GB | Database operations |
 | redis | 1 | 1 GB | In-memory cache |
-| ml-service | 4 | 4 GB | Model inference |
+| ml-service | 4 | 6 GB | Model inference |
 | superset | 2 | 2 GB | Dashboard rendering |
 | celery-training | 4 | 4 GB | CPU-intensive training |
 | celery-prediction | 2 | 2 GB | Batch predictions |
 | celery-monitoring | 1 | 1 GB | Background tasks |
-| celery-beat | 0.5 | 256 MB | Scheduler only |
+| celery-beat | 1 | 1 GB | Scheduler only |
 
 **Total**: ~20 CPU cores, ~19 GB RAM (with overhead, recommend 32 GB)
 
@@ -840,7 +840,7 @@ FRONTEND_URL=https://pravaha.yourcompany.com
 API_BASE_URL=https://pravaha.yourcompany.com/api
 
 # Docker Registry
-REGISTRY=analytics
+REGISTRY=ghcr.io/talentfino/pravaha
 IMAGE_TAG=latest
 
 # Admin Account (auto-generated, change after first login)
@@ -972,8 +972,8 @@ ssl_session_timeout 1d;
 |---------|----------|-------------------|
 | NGINX | `GET /health` | 200 OK |
 | Frontend | `GET /health` | 200 OK |
-| Backend | `GET /health/live` | 200 OK |
-| Backend | `GET /health` | JSON with details |
+| Backend | `GET /health/live` | 200 OK (liveness) |
+| Backend | `GET /api/v1/health` | JSON with details |
 | ML Service | `GET /api/v1/health` | 200 OK |
 | Superset | `GET /health` | 200 OK |
 | PostgreSQL | `pg_isready` | Exit code 0 |
@@ -1402,7 +1402,7 @@ If something goes wrong after update:
 docker compose images
 
 # Check version from API
-curl -s https://pravaha.yourcompany.com/api/health | jq '.version'
+curl -s https://pravaha.yourcompany.com/api/v1/health | jq '.version'
 ```
 
 ---

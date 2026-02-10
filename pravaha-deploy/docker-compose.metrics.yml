@@ -145,7 +145,7 @@ services:
           memory: 256M
     healthcheck:
       <<: *healthcheck-defaults
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health/live"]
 
   # ===========================================================================
   # Alertmanager - Alert Routing and Notification
