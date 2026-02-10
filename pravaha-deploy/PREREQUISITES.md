@@ -10,7 +10,7 @@ Complete checklist and setup commands for Ubuntu 22.04 LTS single-server deploym
 | **RAM** | 16 GB | 32+ GB | ML service + 4 Celery workers need memory |
 | **Storage** | 50 GB SSD | 100+ GB SSD | SSD required for database performance |
 | **OS** | Ubuntu 22.04 LTS | Ubuntu 22.04 LTS | Other Linux distros may work |
-| **Architecture** | x86_64 (amd64) | x86_64 (amd64) | ARM64 not currently supported |
+| **Architecture** | x86_64 (amd64) | x86_64 (amd64) | ARM64 (aarch64) also supported |
 
 ### Service Resource Breakdown
 
@@ -167,25 +167,25 @@ Run these commands to generate secrets for your `.env` file:
 
 ```bash
 # Generate JWT_SECRET (for API authentication)
-echo "JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')"
+echo "JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n/+=')"
 
 # Generate ENCRYPTION_KEY (for data encryption)
 echo "ENCRYPTION_KEY=$(openssl rand -hex 16)"
 
 # Generate SUPERSET_SECRET_KEY (for Superset)
-echo "SUPERSET_SECRET_KEY=$(openssl rand -base64 48 | tr -d '\n')"
+echo "SUPERSET_SECRET_KEY=$(openssl rand -base64 48 | tr -d '\n/+=')"
 
 # Generate MODEL_SIGNING_KEY (for ML model integrity verification)
 echo "MODEL_SIGNING_KEY=$(openssl rand -hex 32)"
 
-# Generate POSTGRES_PASSWORD (for database)
-echo "POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '\n/' | head -c 32)"
+# Generate POSTGRES_PASSWORD (for database - no /+= chars to avoid breaking DATABASE_URL)
+echo "POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '\n/+=')"
 
 # Generate SUPERSET_ADMIN_PASSWORD
-echo "SUPERSET_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '\n/')"
+echo "SUPERSET_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '\n/+=')"
 
 # Generate GRAFANA_ADMIN_PASSWORD (if using logging stack)
-echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '\n/')"
+echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '\n/+=')"
 ```
 
 Save these values - you'll need them for the `.env` file.

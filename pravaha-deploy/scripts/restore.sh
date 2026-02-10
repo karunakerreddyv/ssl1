@@ -12,7 +12,7 @@
 #
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/pravaha}"
 RESTORE_TYPE="full"
@@ -260,6 +260,51 @@ restore_config() {
         cp -r "$BACKUP_DIR/ssl/"* "$DEPLOY_DIR/ssl/"
     fi
 
+    # Branding configuration
+    if [[ -d "$BACKUP_DIR/branding" ]]; then
+        log_info "  Restoring branding configuration"
+        mkdir -p "$DEPLOY_DIR/branding"
+        cp -r "$BACKUP_DIR/branding/"* "$DEPLOY_DIR/branding/" 2>/dev/null || true
+    fi
+
+    # Audit signature keys
+    for pem_file in "$BACKUP_DIR"/audit-*.pem; do
+        if [[ -f "$pem_file" ]]; then
+            log_info "  Restoring $(basename "$pem_file")"
+            cp "$pem_file" "$DEPLOY_DIR/"
+        fi
+    done
+
+    # Admin credential files
+    for cred_file in "$BACKUP_DIR"/.admin_email "$BACKUP_DIR"/.admin_password; do
+        if [[ -f "$cred_file" ]]; then
+            cp "$cred_file" "$DEPLOY_DIR/"
+            chmod 600 "$DEPLOY_DIR/$(basename "$cred_file")"
+        fi
+    done
+
+    # Monitoring configuration
+    if [[ -d "$BACKUP_DIR/monitoring" ]]; then
+        log_info "  Restoring monitoring configuration"
+        mkdir -p "$DEPLOY_DIR/monitoring"
+        cp -r "$BACKUP_DIR/monitoring/"* "$DEPLOY_DIR/monitoring/" 2>/dev/null || true
+    fi
+
+    # Logging configuration
+    if [[ -d "$BACKUP_DIR/logging" ]]; then
+        log_info "  Restoring logging configuration"
+        mkdir -p "$DEPLOY_DIR/logging"
+        cp -r "$BACKUP_DIR/logging/"* "$DEPLOY_DIR/logging/" 2>/dev/null || true
+    fi
+
+    # Docker compose overlay files
+    for compose_file in "$BACKUP_DIR"/docker-compose*.yml; do
+        if [[ -f "$compose_file" ]]; then
+            log_info "  Restoring $(basename "$compose_file")"
+            cp "$compose_file" "$DEPLOY_DIR/"
+        fi
+    done
+
     log_success "Configuration restore completed"
 }
 
@@ -287,6 +332,16 @@ restore_volumes() {
     if [[ -f "$BACKUP_DIR/superset_home.tar.gz" ]]; then
         log_info "  Restoring Superset home..."
         compose_cmd exec -T superset tar xzf - -C / < "$BACKUP_DIR/superset_home.tar.gz" || log_warning "Could not restore Superset home"
+    fi
+
+    if [[ -f "$BACKUP_DIR/ml_storage.tar.gz" ]]; then
+        log_info "  Restoring ML storage..."
+        compose_cmd exec -T ml-service tar xzf - -C / < "$BACKUP_DIR/ml_storage.tar.gz" || log_warning "Could not restore ML storage"
+    fi
+
+    if [[ -f "$BACKUP_DIR/training_data.tar.gz" ]]; then
+        log_info "  Restoring training data..."
+        compose_cmd exec -T ml-service tar xzf - -C / < "$BACKUP_DIR/training_data.tar.gz" || log_warning "Could not restore training data"
     fi
 
     # Stop containers again before the final full restart

@@ -101,22 +101,15 @@ scrape_configs:
 
   # ---------------------------------------------------------------------------
   # Superset (BI Platform)
-  # Apache Superset analytics and visualization
+  # Apache Superset does not expose Prometheus metrics natively.
+  # To monitor Superset, enable StatsD in superset_config.py and deploy
+  # a statsd-exporter sidecar. The /health endpoint returns plain "OK".
   # ---------------------------------------------------------------------------
-  - job_name: 'superset'
-    static_configs:
-      - targets: ['superset:8088']
-    metrics_path: /health
-    scrape_interval: 30s
-    scrape_timeout: 15s
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: instance
-        replacement: 'superset'
-      - target_label: service
-        replacement: 'superset'
-      - target_label: component
-        replacement: 'bi'
+  # - job_name: 'superset'
+  #   static_configs:
+  #     - targets: ['statsd-exporter:9102']
+  #   metrics_path: /metrics
+  #   scrape_interval: 30s
 
   # ---------------------------------------------------------------------------
   # Celery Workers (if they expose metrics)

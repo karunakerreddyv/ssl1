@@ -1,46 +1,19 @@
 # =============================================================================
-# Logstash Configuration - Pravaha Platform Enterprise Logging
+# Logstash Configuration - Pravaha Platform
 # =============================================================================
+http.host: "0.0.0.0"
+http.port: 9600
 
-# Node settings
-node.name: pravaha-logstash
-
-# Path settings
-path.data: /usr/share/logstash/data
-path.logs: /usr/share/logstash/logs
+# Monitoring
+xpack.monitoring.enabled: true
+xpack.monitoring.elasticsearch.hosts: ["http://elasticsearch:9200"]
+xpack.monitoring.elasticsearch.username: "elastic"
+xpack.monitoring.elasticsearch.password: "${ELASTIC_PASSWORD}"
 
 # Pipeline settings
 pipeline.workers: 2
 pipeline.batch.size: 125
 pipeline.batch.delay: 50
-pipeline.ordered: auto
 
-# Pipeline configuration path
-path.config: /usr/share/logstash/pipeline
-
-# Config auto-reload (useful for development)
-config.reload.automatic: false
-config.reload.interval: 3s
-
-# HTTP API settings (for monitoring)
-http.host: 0.0.0.0
-http.port: 9600
-
-# Logging settings
+# Logging
 log.level: info
-log.format: json
-
-# Dead letter queue (for failed events)
-dead_letter_queue.enable: true
-dead_letter_queue.max_bytes: 1024mb
-dead_letter_queue.flush_interval: 5000
-
-# Metrics
-monitoring.enabled: false
-
-# Queue settings (memory-based for performance)
-queue.type: memory
-queue.max_bytes: 1gb
-
-# Xpack monitoring (disabled - using built-in HTTP API)
-xpack.monitoring.enabled: false

@@ -157,7 +157,7 @@ scrape_configs:
                 status:
             - template:
                 source: level
-                template: '{{ if eq .status "5" }}error{{ else if eq .status "4" }}warn{{ else }}info{{ end }}'
+                template: '{{ if hasPrefix "5" .status }}error{{ else if hasPrefix "4" .status }}warn{{ else }}info{{ end }}'
             - labels:
                 level:
 

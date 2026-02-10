@@ -18,7 +18,7 @@
 #
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/pravaha}"
 BACKUP_DIR="${BACKUP_DIR:-$DEPLOY_DIR/backups}"

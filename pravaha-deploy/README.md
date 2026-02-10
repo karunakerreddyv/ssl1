@@ -514,7 +514,7 @@ curl -k https://localhost/health
 # Expected: {"status":"ok"}
 
 # Backend API
-curl -k https://localhost/api/health
+curl -k https://localhost/api/v1/health
 # Expected: {"status":"healthy","database":"connected","redis":"connected"}
 
 # ML Service

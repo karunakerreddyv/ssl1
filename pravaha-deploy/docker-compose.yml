@@ -103,7 +103,7 @@ services:
   # Frontend - React SPA
   # ===========================================================================
   frontend:
-    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}frontend:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX:-pravaha-}frontend:${IMAGE_TAG:-latest}
     container_name: pravaha-frontend
     restart: unless-stopped
     logging: *default-logging
@@ -135,7 +135,7 @@ services:
   # Backend - Node.js API
   # ===========================================================================
   backend:
-    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}backend:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX:-pravaha-}backend:${IMAGE_TAG:-latest}
     container_name: pravaha-backend
     restart: unless-stopped
     logging: *default-logging
@@ -162,7 +162,10 @@ services:
       - SCHEMA_SYNC_DIR=/app/workflow-configs
       # Redis cache (use DB 0 for backend)
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}/0
-      - INTERNAL_SERVICE_KEY=${INTERNAL_SERVICE_KEY:-dev-internal-service-key-2025-not-for-production}
+      - INTERNAL_SERVICE_KEY=${INTERNAL_SERVICE_KEY}
+      - TRUST_PROXY_HOPS=${TRUST_PROXY_HOPS:-1}
+      - PLUGINS_DEV_PATH=/app/packages/pluginsdev
+      - PLUGIN_STORAGE_PATH=${PLUGIN_STORAGE_PATH:-/app/plugins}
     volumes:
       - uploads:/app/uploads
       - app_logs:/app/logs
@@ -170,6 +173,7 @@ services:
       - ./audit-private.pem:/app/audit-private.pem:ro
       - ./audit-public.pem:/app/audit-public.pem:ro
       - ./branding:/app/branding:ro
+      - plugins:/app/plugins
     depends_on:
       redis:
         condition: service_healthy
@@ -196,7 +200,7 @@ services:
   # Superset - BI & Analytics
   # ===========================================================================
   superset:
-    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}superset:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX:-pravaha-}superset:${IMAGE_TAG:-latest}
     container_name: pravaha-superset
     restart: unless-stopped
     logging: *default-logging
@@ -214,6 +218,11 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}/1
       # Backend URL for platform integration
       - PLATFORM_API_BASE=http://backend:3000
+      - SUPERSET_ADMIN_USERNAME=${SUPERSET_ADMIN_USERNAME:-admin}
+      - SUPERSET_ADMIN_EMAIL=${SUPERSET_ADMIN_EMAIL:-admin@pravaha.io}
+      - SUPERSET_ADMIN_PASSWORD=${SUPERSET_ADMIN_PASSWORD:-admin}
+      - SUPERSET_WORKERS=${SUPERSET_WORKERS:-4}
+      - SUPERSET_WEBSERVER_BASEPATH=${SUPERSET_WEBSERVER_BASEPATH:-/insights}
     volumes:
       - superset_home:/app/superset_home
     depends_on:
@@ -240,7 +249,7 @@ services:
   # ML Service - Python FastAPI API Server
   # ===========================================================================
   ml-service:
-    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-ml-service
     restart: unless-stopped
     logging: *default-logging
@@ -262,7 +271,10 @@ services:
       - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379}/3
       # ML Storage path for uploaded datasets
       - ML_STORAGE_PATH=${ML_STORAGE_PATH:-/data/ml-storage}
-      - INTERNAL_SERVICE_KEY=${INTERNAL_SERVICE_KEY:-dev-internal-service-key-2025-not-for-production}
+      - INTERNAL_SERVICE_KEY=${INTERNAL_SERVICE_KEY}
+      - UVICORN_TIMEOUT_KEEP_ALIVE=${UVICORN_TIMEOUT_KEEP_ALIVE:-65}
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
+      - UVICORN_LIMIT_MAX_REQUESTS=${UVICORN_LIMIT_MAX_REQUESTS:-50000}
     volumes:
       - ml_models:/app/models
       - ml_logs:/app/logs
@@ -293,7 +305,7 @@ services:
   # Handles ML model training tasks (long-running)
   # ===========================================================================
   celery-worker-training:
-    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-celery-training
     restart: unless-stopped
     logging: *default-logging
@@ -354,7 +366,7 @@ services:
   # Handles ML prediction and batch processing tasks
   # ===========================================================================
   celery-worker-prediction:
-    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-celery-prediction
     restart: unless-stopped
     logging: *default-logging
@@ -415,7 +427,7 @@ services:
   # Handles monitoring, alerting, analytics, and maintenance tasks
   # ===========================================================================
   celery-worker-monitoring:
-    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-celery-monitoring
     restart: unless-stopped
     logging: *default-logging
@@ -472,7 +484,7 @@ services:
   # Runs scheduled/periodic tasks (model retraining, cleanup, etc.)
   # ===========================================================================
   celery-beat:
-    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX-pravaha-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-celery-beat
     restart: unless-stopped
     logging: *default-logging
@@ -508,11 +520,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 256M
+          cpus: '1'
+          memory: 1G
         reservations:
-          cpus: '0.1'
-          memory: 128M
+          cpus: '0.25'
+          memory: 256M
     healthcheck:
       # Check if beat process is running via PID file
       test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid) 2>/dev/null || exit 1"]
@@ -572,7 +584,7 @@ services:
     command: >
       redis-server
       --appendonly yes
-      --maxmemory ${REDIS_MAXMEMORY:-512mb}
+      --maxmemory ${REDIS_MAXMEMORY:-1gb}
       --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
       --stop-writes-on-bgsave-error no
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
@@ -604,6 +616,7 @@ services:
 # =============================================================================
 networks:
   pravaha-network:
+    name: pravaha-network
     driver: bridge
 
 # =============================================================================
@@ -637,4 +650,6 @@ volumes:
     driver: local
   # Workflow config schemas synced from frontend for context generation
   workflow_configs:
+    driver: local
+  plugins:
     driver: local

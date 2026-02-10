@@ -12,7 +12,7 @@
 #
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/pravaha}"
@@ -46,7 +46,7 @@ add_cron_job() {
     local cron_line="$schedule $BACKUP_SCRIPT $backup_type >> $LOG_DIR/backup.log 2>&1 $CRON_MARKER - $description"
 
     # Add to crontab
-    (crontab -l 2>/dev/null | grep -v "$CRON_MARKER"; echo "$cron_line") | crontab -
+    (crontab -l 2>/dev/null; echo "$cron_line") | crontab -
 
     log_success "Added: $description"
 }

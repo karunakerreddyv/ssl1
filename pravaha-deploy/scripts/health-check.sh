@@ -353,7 +353,10 @@ if [[ "$JSON_OUTPUT" != "true" ]]; then
     echo "----------------------------------------------"
 fi
 
-check_container "postgres" true
+POSTGRES_MODE="${POSTGRES_MODE:-bundled}"
+if [[ "$POSTGRES_MODE" == "bundled" ]]; then
+    check_container "postgres" true
+fi
 check_container "redis" true
 check_container "backend" true
 check_container "frontend" false
@@ -373,7 +376,9 @@ if [[ "$QUICK_MODE" != "true" ]]; then
         echo "----------------------------------------------"
     fi
 
-    check_postgres
+    if [[ "$POSTGRES_MODE" == "bundled" ]]; then
+        check_postgres
+    fi
     check_redis
 
     # Service Endpoints
@@ -436,6 +441,7 @@ fi
 if [[ "$JSON_OUTPUT" == "true" ]]; then
     echo "{"
     echo "  \"timestamp\": \"$(date -Iseconds)\","
+    echo "  \"deployment\": \"single-server\","
     echo "  \"domain\": \"$DOMAIN\","
     echo "  \"total_checks\": $TOTAL_CHECKS,"
     echo "  \"passed\": $PASSED_CHECKS,"

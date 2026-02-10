@@ -15,7 +15,7 @@
 #
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 # =============================================================================
 # Global Configuration
@@ -912,7 +912,7 @@ generate_secrets() {
     # Node.js signs with ML_SERVICE_HMAC_SECRET, Python verifies with either
     sed -i "s|^HMAC_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_HMAC|HMAC_SECRET=$ml_service_hmac_secret|" "$env_file"
     sed -i "s|^AUDIT_SIGNATURE_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_AUDIT|AUDIT_SIGNATURE_SECRET=$audit_signature_secret|" "$env_file"
-    sed -i "s|^CCM_ENCRYPTION_KEY=.*|CCM_ENCRYPTION_KEY=$ccm_encryption_key|" "$env_file"
+    sed -i "s|^CCM_ENCRYPTION_KEY=CHANGE_ME_GENERATE_64_CHAR_HEX_CCM|CCM_ENCRYPTION_KEY=$ccm_encryption_key|" "$env_file"
     sed -i "s|^STORAGE_ENCRYPTION_KEY=CHANGE_ME_GENERATE_64_CHAR_HEX_STORAGE|STORAGE_ENCRYPTION_KEY=$storage_encryption_key|" "$env_file"
     sed -i "s|^EVIDENCE_HMAC_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_EVIDENCE|EVIDENCE_HMAC_SECRET=$evidence_hmac_secret|" "$env_file"
     sed -i "s|^ML_SERVICE_HMAC_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_ML_HMAC|ML_SERVICE_HMAC_SECRET=$ml_service_hmac_secret|" "$env_file"
@@ -927,6 +927,9 @@ generate_secrets() {
     # Replace admin credential placeholders
     sed -i "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=$platform_admin_email|" "$env_file"
     sed -i "s|^ADMIN_PASSWORD=CHANGE_ME_ADMIN_PASSWORD|ADMIN_PASSWORD=$platform_admin_password|" "$env_file"
+
+    # Update SUPERSET_ADMIN_EMAIL to match platform admin (not admin@example.com)
+    sed -i "s|^SUPERSET_ADMIN_EMAIL=.*|SUPERSET_ADMIN_EMAIL=$platform_admin_email|" "$env_file"
 
     # Replace other placeholders
     sed -i "s|CHANGE_ME_SECURE_PASSWORD|$postgres_password|g" "$env_file"
@@ -1011,7 +1014,7 @@ O = Pravaha
 C = US
 
 [v3_req]
-keyUsage = keyEncipherment, dataEncipherment
+keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 
@@ -1378,7 +1381,7 @@ docker compose ps
 
 # Test health endpoints
 curl -k https://$domain/health
-curl -k https://$domain/api/health
+curl -k https://$domain/api/v1/health
 curl -k https://$domain/ml/api/v1/health
 \`\`\`
 

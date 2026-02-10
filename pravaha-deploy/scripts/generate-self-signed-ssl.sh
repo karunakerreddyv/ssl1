@@ -12,7 +12,7 @@
 #       Use Let's Encrypt for production deployments.
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -64,7 +64,9 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
     -keyout "$SSL_DIR/privkey.pem" \
     -out "$SSL_DIR/fullchain.pem" \
     -subj "/CN=$DOMAIN/O=Pravaha Platform/C=US" \
-    -addext "subjectAltName=DNS:$DOMAIN,DNS:*.$DOMAIN,DNS:localhost,IP:127.0.0.1"
+    -addext "subjectAltName=DNS:$DOMAIN,DNS:*.$DOMAIN,DNS:localhost,IP:127.0.0.1" \
+    -addext "keyUsage=digitalSignature,keyEncipherment" \
+    -addext "extendedKeyUsage=serverAuth"
 
 # Set proper permissions
 chmod 600 "$SSL_DIR/privkey.pem"

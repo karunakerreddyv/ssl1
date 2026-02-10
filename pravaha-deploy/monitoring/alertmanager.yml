@@ -19,10 +19,10 @@
 
 global:
   # Default SMTP settings for email notifications
-  smtp_smarthost: 'smtp.gmail.com:587'
-  smtp_from: 'alertmanager@example.com'
-  smtp_auth_username: ''
-  smtp_auth_password: ''
+  smtp_smarthost: '${SMTP_HOST:-smtp.gmail.com}:${SMTP_PORT:-587}'
+  smtp_from: '${ALERT_FROM_EMAIL:-alerts@pravaha.io}'
+  smtp_auth_username: '${SMTP_USERNAME:-}'
+  smtp_auth_password: '${SMTP_PASSWORD:-}'
   smtp_require_tls: true
 
   # Slack API URL (if using Slack)
@@ -141,7 +141,7 @@ receivers:
         http_config:
           basic_auth:
             username: 'alertmanager'
-            password: 'alertmanager-webhook-secret'
+            password: '${ALERTMANAGER_WEBHOOK_SECRET:-alertmanager-webhook-secret}'
 
   # ---------------------------------------------------------------------------
   # Critical alerts receiver
@@ -182,6 +182,10 @@ receivers:
     webhook_configs:
       - url: 'http://backend:3000/api/internal/alerts/webhook'
         send_resolved: true
+        http_config:
+          basic_auth:
+            username: 'alertmanager'
+            password: '${ALERTMANAGER_WEBHOOK_SECRET:-alertmanager-webhook-secret}'
 
   # ---------------------------------------------------------------------------
   # Warning alerts receiver
@@ -198,6 +202,10 @@ receivers:
     webhook_configs:
       - url: 'http://backend:3000/api/internal/alerts/webhook'
         send_resolved: true
+        http_config:
+          basic_auth:
+            username: 'alertmanager'
+            password: '${ALERTMANAGER_WEBHOOK_SECRET:-alertmanager-webhook-secret}'
 
   # ---------------------------------------------------------------------------
   # Info alerts receiver
@@ -206,6 +214,10 @@ receivers:
     webhook_configs:
       - url: 'http://backend:3000/api/internal/alerts/webhook'
         send_resolved: true
+        http_config:
+          basic_auth:
+            username: 'alertmanager'
+            password: '${ALERTMANAGER_WEBHOOK_SECRET:-alertmanager-webhook-secret}'
 
   # ---------------------------------------------------------------------------
   # Database alerts receiver
@@ -217,6 +229,10 @@ receivers:
     webhook_configs:
       - url: 'http://backend:3000/api/internal/alerts/webhook'
         send_resolved: true
+        http_config:
+          basic_auth:
+            username: 'alertmanager'
+            password: '${ALERTMANAGER_WEBHOOK_SECRET:-alertmanager-webhook-secret}'
 
   # ---------------------------------------------------------------------------
   # ML Service alerts receiver
@@ -230,6 +246,10 @@ receivers:
     webhook_configs:
       - url: 'http://backend:3000/api/internal/alerts/webhook'
         send_resolved: true
+        http_config:
+          basic_auth:
+            username: 'alertmanager'
+            password: '${ALERTMANAGER_WEBHOOK_SECRET:-alertmanager-webhook-secret}'
 
   # ---------------------------------------------------------------------------
   # Infrastructure alerts receiver
@@ -241,6 +261,10 @@ receivers:
     webhook_configs:
       - url: 'http://backend:3000/api/internal/alerts/webhook'
         send_resolved: true
+        http_config:
+          basic_auth:
+            username: 'alertmanager'
+            password: '${ALERTMANAGER_WEBHOOK_SECRET:-alertmanager-webhook-secret}'
 
 # =============================================================================
 # Inhibition Rules

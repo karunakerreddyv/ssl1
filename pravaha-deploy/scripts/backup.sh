@@ -18,7 +18,7 @@
 #
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 # Configuration
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/pravaha}"
@@ -197,9 +197,35 @@ backup_config() {
         cp -r "$DEPLOY_DIR/ssl" "$BACKUP_DIR/$BACKUP_NAME/"
     fi
 
-    # Docker compose files
-    cp "$DEPLOY_DIR/docker-compose.yml" "$BACKUP_DIR/$BACKUP_NAME/" 2>/dev/null || true
-    cp "$DEPLOY_DIR/docker-compose.build.yml" "$BACKUP_DIR/$BACKUP_NAME/" 2>/dev/null || true
+    # Branding configuration
+    if [[ -d "$DEPLOY_DIR/branding" ]]; then
+        cp -r "$DEPLOY_DIR/branding" "$BACKUP_DIR/$BACKUP_NAME/"
+    fi
+
+    # Audit signature keys (critical - if lost, audit log verification breaks)
+    for pem_file in "$DEPLOY_DIR"/audit-*.pem; do
+        [[ -f "$pem_file" ]] && cp "$pem_file" "$BACKUP_DIR/$BACKUP_NAME/"
+    done
+
+    # Admin credential files
+    for cred_file in "$DEPLOY_DIR"/.admin_email "$DEPLOY_DIR"/.admin_password; do
+        [[ -f "$cred_file" ]] && cp "$cred_file" "$BACKUP_DIR/$BACKUP_NAME/"
+    done
+
+    # Monitoring configuration (Prometheus, Alertmanager, alerts, Grafana dashboards)
+    if [[ -d "$DEPLOY_DIR/monitoring" ]]; then
+        cp -r "$DEPLOY_DIR/monitoring" "$BACKUP_DIR/$BACKUP_NAME/"
+    fi
+
+    # Logging configuration (Loki, Promtail)
+    if [[ -d "$DEPLOY_DIR/logging" ]]; then
+        cp -r "$DEPLOY_DIR/logging" "$BACKUP_DIR/$BACKUP_NAME/"
+    fi
+
+    # Docker compose files (main + all overlays)
+    for compose_file in "$DEPLOY_DIR"/docker-compose*.yml; do
+        [[ -f "$compose_file" ]] && cp "$compose_file" "$BACKUP_DIR/$BACKUP_NAME/"
+    done
 
     log_success "Configuration backup completed"
 }
@@ -226,6 +252,16 @@ backup_volumes() {
     log_info "  Backing up Superset home..."
     compose_cmd exec -T superset tar czf - /app/superset_home 2>/dev/null \
         > "$BACKUP_DIR/$BACKUP_NAME/superset_home.tar.gz" || log_warning "No Superset home to backup"
+
+    # ML storage (datasets, prepared data)
+    log_info "  Backing up ML storage..."
+    compose_cmd exec -T ml-service tar czf - /data/ml-storage 2>/dev/null \
+        > "$BACKUP_DIR/$BACKUP_NAME/ml_storage.tar.gz" || log_warning "No ML storage to backup"
+
+    # Training data
+    log_info "  Backing up training data..."
+    compose_cmd exec -T ml-service tar czf - /app/training_data 2>/dev/null \
+        > "$BACKUP_DIR/$BACKUP_NAME/training_data.tar.gz" || log_warning "No training data to backup"
 
     log_success "Volume backups completed"
 }
@@ -257,7 +293,7 @@ cat > "$BACKUP_DIR/$BACKUP_NAME/manifest.json" << EOF
     "platform_db": "$PLATFORM_DB",
     "superset_db": "$SUPERSET_DB",
     "created_at": "$(date -Iseconds)",
-    "version": "$(cat $DEPLOY_DIR/.env 2>/dev/null | grep IMAGE_TAG | cut -d= -f2 || echo 'unknown')"
+    "version": "$(cat "$DEPLOY_DIR/.env" 2>/dev/null | grep IMAGE_TAG | cut -d= -f2 || echo 'unknown')"
 }
 EOF
 

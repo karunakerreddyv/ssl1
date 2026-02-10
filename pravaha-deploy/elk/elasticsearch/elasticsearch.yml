@@ -1,59 +1,30 @@
 # =============================================================================
-# Elasticsearch Configuration - Single Node Deployment
-# Pravaha Platform Enterprise Logging
+# Elasticsearch Configuration - Pravaha Platform
 # =============================================================================
-
-# Cluster settings
 cluster.name: pravaha-logs
 node.name: es-node-01
 
-# Network settings
 network.host: 0.0.0.0
 http.port: 9200
-transport.port: 9300
 
-# Single-node discovery (no cluster formation)
 discovery.type: single-node
 
-# Path settings
+# Paths
 path.data: /usr/share/elasticsearch/data
 path.logs: /usr/share/elasticsearch/logs
 
-# Security settings (configured via environment variables)
-xpack.security.enabled: ${ELASTIC_SECURITY_ENABLED:true}
-xpack.security.enrollment.enabled: false
-
-# HTTP layer security
-xpack.security.http.ssl.enabled: false
-
-# Transport layer security (disabled for single-node)
-xpack.security.transport.ssl.enabled: false
-
-# Disable machine learning (reduces memory footprint)
-xpack.ml.enabled: false
-
-# Monitoring settings
-xpack.monitoring.collection.enabled: true
-
-# Index Lifecycle Management
-xpack.ilm.enabled: true
-
-# Memory settings
-# Note: Heap size is configured via ES_JAVA_OPTS environment variable
-# Bootstrap memory lock to prevent swapping
+# Memory
 bootstrap.memory_lock: true
 
-# Index settings for log data
-action.auto_create_index: +pravaha-*,+.monitoring*,+.watches*,+.triggered_watches*,+.watcher-history*,+.security*
+# Security (configured via environment variables)
+xpack.security.enabled: ${ELASTIC_SECURITY_ENABLED:true}
+xpack.security.enrollment.enabled: false
+xpack.security.http.ssl.enabled: false
+xpack.security.transport.ssl.enabled: false
 
-# Slow log settings
-index.search.slowlog.threshold.query.warn: 10s
-index.search.slowlog.threshold.query.info: 5s
-index.search.slowlog.threshold.fetch.warn: 1s
-index.indexing.slowlog.threshold.index.warn: 10s
-
-# Recovery throttling
-indices.recovery.max_bytes_per_sec: 50mb
-
-# GeoIP database (disable for air-gapped deployments)
+# Disable unnecessary features for log storage
+xpack.ml.enabled: false
 ingest.geoip.downloader.enabled: false
+
+# Index lifecycle management
+xpack.ilm.enabled: true

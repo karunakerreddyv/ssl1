@@ -93,13 +93,13 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "${GRAFANA_PORT:-3002}:3000"
+      - "${GRAFANA_METRICS_PORT:-3002}:3000"
     environment:
       # Admin credentials
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       # Server configuration
-      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3002}
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s:${GRAFANA_METRICS_PORT:-3002}/
       - GF_SERVER_SERVE_FROM_SUB_PATH=false
       # Database (use SQLite by default, can switch to PostgreSQL)
       - GF_DATABASE_TYPE=sqlite3
@@ -119,7 +119,7 @@ services:
       - GF_USERS_AUTO_ASSIGN_ORG=true
       - GF_USERS_AUTO_ASSIGN_ORG_ROLE=Viewer
       # Alerting
-      - GF_ALERTING_ENABLED=true
+      - GF_ALERTING_ENABLED=false
       - GF_UNIFIED_ALERTING_ENABLED=true
       # Logging
       - GF_LOG_MODE=console

@@ -504,11 +504,14 @@ generate_secrets() {
     local env_file="$DEPLOY_DIR/.env"
 
     if [[ -f "$env_file" ]]; then
-        log_warning ".env file already exists. Backing up and regenerating..."
-        cp "$env_file" "$env_file.backup.$(date +%Y%m%d_%H%M%S)"
+        if ! grep -q "CHANGE_ME" "$env_file"; then
+            log_info ".env file exists with secrets already generated. Skipping."
+            return
+        fi
+        log_info ".env file exists with CHANGE_ME placeholders. Generating secrets..."
+    else
+        cp "$DEPLOY_DIR/.env.example" "$env_file"
     fi
-
-    cp "$DEPLOY_DIR/.env.example" "$env_file"
 
     # Generate unique secrets
     local jwt_secret=$(openssl rand -base64 48 | tr -d '\n/+=')
@@ -586,6 +589,9 @@ generate_secrets() {
     sed_inplace "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=$platform_admin_email|" "$env_file"
     sed_inplace "s|^ADMIN_PASSWORD=CHANGE_ME_ADMIN_PASSWORD|ADMIN_PASSWORD=$platform_admin_password|" "$env_file"
 
+    # Update SUPERSET_ADMIN_EMAIL to match platform admin (not admin@example.com)
+    sed_inplace "s|^SUPERSET_ADMIN_EMAIL=.*|SUPERSET_ADMIN_EMAIL=$platform_admin_email|" "$env_file"
+
     # Replace other placeholders
     sed_inplace "s|CHANGE_ME_SECURE_PASSWORD|$postgres_password|g" "$env_file"
     sed_inplace "s|CHANGE_ME_ADMIN_PASSWORD|$admin_password|g" "$env_file"
@@ -652,7 +658,7 @@ O = Pravaha
 C = US
 
 [v3_req]
-keyUsage = keyEncipherment, dataEncipherment
+keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 
