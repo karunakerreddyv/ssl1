@@ -52,6 +52,7 @@ Resource limits are configured in docker-compose.yml:
 | celery-beat | 1 core | 1 GB | Task scheduler |
 | frontend | 0.5 cores | 256 MB | Static SPA serving |
 | nginx | 1 core | 512 MB | Reverse proxy |
+| jupyter | 2 cores | 4 GB | Interactive notebook server |
 
 ### ELK Stack Requirements (Optional)
 
@@ -499,6 +500,7 @@ docker compose ps
 # pravaha-backend      - Up (healthy)
 # pravaha-superset     - Up (healthy)
 # pravaha-ml-service   - Up (healthy)
+# pravaha-jupyter      - Up (healthy)
 # pravaha-celery-training    - Up (healthy)
 # pravaha-celery-prediction  - Up (healthy)
 # pravaha-celery-monitoring  - Up (healthy)
@@ -571,6 +573,7 @@ rm /opt/pravaha/.admin_email /opt/pravaha/.admin_password
 | backend | 3000 | Node.js API |
 | superset | 8088 | BI & Analytics |
 | ml-service | 8001 | ML predictions API |
+| jupyter | 8888 | Jupyter Notebook server |
 | celery-worker-training | - | ML model training background jobs |
 | celery-worker-prediction | - | ML prediction background jobs |
 | celery-worker-monitoring | - | Monitoring and alerting jobs |
@@ -600,7 +603,7 @@ After deployment:
 - **Platform**: https://your-domain.com
 - **Superset**: https://your-domain.com/insights/
 - **API**: https://your-domain.com/api/v1/
-- **Jupyter Notebooks**: https://your-domain.com/notebooks/ (when enabled)
+- **Jupyter Notebooks**: https://your-domain.com/notebooks/
 - **Logs Viewer**: https://your-domain.com/logs/ (when enabled)
 - **Kibana**: https://your-domain.com/elk/ (when enabled)
 
@@ -608,22 +611,14 @@ After deployment:
 
 ### Jupyter Notebooks
 
-Enable Jupyter for interactive data exploration and ML development:
-
-```bash
-# Start with Jupyter enabled
-docker compose -f docker-compose.yml -f docker-compose.jupyter.yml up -d
-
-# Or add to existing deployment
-docker compose -f docker-compose.yml -f docker-compose.jupyter.yml up -d jupyter
-```
+Jupyter is included as a core service and starts automatically with `docker compose up -d`.
 
 **Access:** `https://your-domain.com/notebooks/`
 
 **Configuration** (in `.env`):
 ```bash
 JUPYTER_TOKEN=your-secure-token-here
-JUPYTER_IMAGE=jupyter/scipy-notebook:2024-01-15
+JUPYTER_IMAGE=quay.io/jupyter/scipy-notebook:2024-10-07
 ```
 
 ### Enterprise Log Viewer
@@ -662,20 +657,18 @@ docker compose -f docker-compose.yml -f docker-compose.elk.yml up -d
 
 ### Combining Optional Services
 
-You can enable multiple optional services:
+You can enable multiple optional services (Jupyter is already included in the main compose file):
 
 ```bash
-# Enable Jupyter + Logging
+# Enable Logging
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.jupyter.yml \
   -f docker-compose.logging.yml \
   up -d
 
-# Enable all optional services
+# Enable ELK stack
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.jupyter.yml \
   -f docker-compose.elk.yml \
   up -d
 ```
@@ -984,7 +977,6 @@ docker compose logs celery-worker-training | tail -50
 /opt/pravaha/
 ├── docker-compose.yml              # Main service definitions
 ├── docker-compose.build.yml        # Local build overrides
-├── docker-compose.jupyter.yml      # Jupyter notebook service
 ├── docker-compose.elk.yml          # ELK stack for logging
 ├── docker-compose.logging.yml      # Simple log viewer
 ├── .env                            # Environment configuration

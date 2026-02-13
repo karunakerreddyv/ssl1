@@ -451,6 +451,7 @@ setup_directories() {
     mkdir -p "$DEPLOY_DIR/ssl"
     mkdir -p "$DEPLOY_DIR/backups"
     mkdir -p "$DEPLOY_DIR/logs"
+    mkdir -p "$DEPLOY_DIR/notebooks"
     mkdir -p "$DEPLOY_DIR/reports"
 
     # Ensure scripts are executable
@@ -511,6 +512,7 @@ generate_secrets() {
         log_info ".env file exists with CHANGE_ME placeholders. Generating secrets..."
     else
         cp "$DEPLOY_DIR/.env.example" "$env_file"
+        chmod 600 "$env_file"
     fi
 
     # Generate unique secrets
@@ -518,13 +520,15 @@ generate_secrets() {
     local superset_secret=$(openssl rand -base64 48 | tr -d '\n/+=')
     local encryption_key=$(openssl rand -hex 16)
     local postgres_password=$(openssl rand -base64 24 | tr -d '\n/+=')
-    local admin_password=$(openssl rand -base64 16 | tr -d '\n/+=')
+    # Note: admin_password is intentionally NOT used separately.
+    # SUPERSET_ADMIN_PASSWORD must match the platform admin password.
+    # See: CHANGE_ME_ADMIN_PASSWORD global replace below uses platform_admin_password.
     local grafana_password=$(openssl rand -base64 16 | tr -d '\n/+=')
     local ml_service_api_key=$(openssl rand -base64 32 | tr -d '\n/+=')
     local ml_service_hmac_secret=$(openssl rand -hex 32)
     local csrf_secret=$(openssl rand -base64 32 | tr -d '\n/+=')
     local session_secret=$(openssl rand -base64 48 | tr -d '\n/+=')
-    local jupyter_token=$(openssl rand -base64 32 | tr -d '\n/+=')
+    local jupyter_token=$(openssl rand -hex 32)
     local lineage_secret=$(openssl rand -hex 32)
     local credential_master_key=$(openssl rand -hex 32)
     local model_signing_key=$(openssl rand -hex 32)
@@ -544,9 +548,18 @@ generate_secrets() {
     fi
     if [[ -z "$ml_credential_encryption_key" ]]; then
         # Fallback: generate URL-safe base64 key compatible with Fernet (32 random bytes → urlsafe_b64encode)
-        ml_credential_encryption_key=$(python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" 2>/dev/null \
-            || openssl rand 32 | base64 | tr '+/' '-_')
-        log_warning "Generated Fernet key via fallback. Verify ML credential encryption works after startup."
+        ml_credential_encryption_key=$(python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" 2>/dev/null)
+    fi
+    if [[ -z "$ml_credential_encryption_key" ]]; then
+        # Last resort: openssl fallback with padding preserved (Fernet requires = padding)
+        ml_credential_encryption_key=$(openssl rand 32 | base64 | tr '+/' '-_')
+        log_warning "Generated Fernet key via openssl fallback. Verify ML credential encryption works after startup."
+    fi
+    # Ensure Fernet key has correct padding (must be exactly 44 chars with trailing =)
+    if [[ ${#ml_credential_encryption_key} -lt 44 ]]; then
+        while [[ $((${#ml_credential_encryption_key} % 4)) -ne 0 ]]; do
+            ml_credential_encryption_key="${ml_credential_encryption_key}="
+        done
     fi
 
     # ELK Stack secrets
@@ -577,24 +590,24 @@ generate_secrets() {
     sed_inplace "s|^EXCEPTION_ENCRYPTION_KEY=CHANGE_ME_GENERATE_64_CHAR_HEX_EXCEPTION|EXCEPTION_ENCRYPTION_KEY=$exception_encryption_key|" "$env_file"
     sed_inplace "s|^HMAC_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_HMAC|HMAC_SECRET=$ml_service_hmac_secret|" "$env_file"
     sed_inplace "s|^AUDIT_SIGNATURE_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_AUDIT|AUDIT_SIGNATURE_SECRET=$audit_signature_secret|" "$env_file"
-    sed_inplace "s|^CCM_ENCRYPTION_KEY=.*|CCM_ENCRYPTION_KEY=$ccm_encryption_key|" "$env_file"
+    sed_inplace "s|^CCM_ENCRYPTION_KEY=CHANGE_ME_GENERATE_64_CHAR_HEX_CCM|CCM_ENCRYPTION_KEY=$ccm_encryption_key|" "$env_file"
     sed_inplace "s|^STORAGE_ENCRYPTION_KEY=CHANGE_ME_GENERATE_64_CHAR_HEX_STORAGE|STORAGE_ENCRYPTION_KEY=$storage_encryption_key|" "$env_file"
     sed_inplace "s|^EVIDENCE_HMAC_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_EVIDENCE|EVIDENCE_HMAC_SECRET=$evidence_hmac_secret|" "$env_file"
     sed_inplace "s|^ML_SERVICE_HMAC_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_ML_HMAC|ML_SERVICE_HMAC_SECRET=$ml_service_hmac_secret|" "$env_file"
     sed_inplace "s|^ML_CREDENTIAL_ENCRYPTION_KEY=CHANGE_ME_GENERATE_FERNET_KEY|ML_CREDENTIAL_ENCRYPTION_KEY=$ml_credential_encryption_key|" "$env_file"
-    sed_inplace "s|^SESSION_SECRET=.*|SESSION_SECRET=$session_secret|" "$env_file"
-    sed_inplace "s|^INTERNAL_SERVICE_KEY=.*|INTERNAL_SERVICE_KEY=$internal_service_key|" "$env_file"
+    sed_inplace "s|^SESSION_SECRET=$|SESSION_SECRET=$session_secret|" "$env_file"
+    sed_inplace "s|^INTERNAL_SERVICE_KEY=CHANGE_ME_GENERATE_INTERNAL_SERVICE_KEY|INTERNAL_SERVICE_KEY=$internal_service_key|" "$env_file"
 
     # Replace admin credentials
-    sed_inplace "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=$platform_admin_email|" "$env_file"
+    sed_inplace "s|^ADMIN_EMAIL=admin@example.com|ADMIN_EMAIL=$platform_admin_email|" "$env_file"
     sed_inplace "s|^ADMIN_PASSWORD=CHANGE_ME_ADMIN_PASSWORD|ADMIN_PASSWORD=$platform_admin_password|" "$env_file"
 
     # Update SUPERSET_ADMIN_EMAIL to match platform admin (not admin@example.com)
-    sed_inplace "s|^SUPERSET_ADMIN_EMAIL=.*|SUPERSET_ADMIN_EMAIL=$platform_admin_email|" "$env_file"
+    sed_inplace "s|^SUPERSET_ADMIN_EMAIL=admin@example.com|SUPERSET_ADMIN_EMAIL=$platform_admin_email|" "$env_file"
 
     # Replace other placeholders
     sed_inplace "s|CHANGE_ME_SECURE_PASSWORD|$postgres_password|g" "$env_file"
-    sed_inplace "s|CHANGE_ME_ADMIN_PASSWORD|$admin_password|g" "$env_file"
+    sed_inplace "s|CHANGE_ME_ADMIN_PASSWORD|$platform_admin_password|g" "$env_file"
     sed_inplace "s|CHANGE_ME_GRAFANA_PASSWORD|$grafana_password|g" "$env_file"
     # Generate and replace GRAFANA_SECRET_KEY
     local grafana_secret_key=$(openssl rand -base64 24 | tr -d '\n/+=')
@@ -682,9 +695,11 @@ EOF
 
 # Authenticate with container registry (GHCR, Docker Hub, etc.)
 authenticate_registry() {
+    local registry=""
+
     # Source .env to get registry configuration
     if [[ -f "$DEPLOY_DIR/.env" ]]; then
-        local registry=$(grep "^REGISTRY=" "$DEPLOY_DIR/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+        registry=$(grep "^REGISTRY=" "$DEPLOY_DIR/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
     fi
 
     # Default to GHCR if not set
@@ -808,7 +823,7 @@ init_database() {
     cd "$DEPLOY_DIR"
 
     # Source env to get credentials and branding prefix
-    source "$DEPLOY_DIR/.env" 2>/dev/null || true
+    set -a; source "$DEPLOY_DIR/.env" 2>/dev/null || true; set +a
     local pg_user="${POSTGRES_USER:-pravaha}"
     local platform_db="${PLATFORM_DB:-autoanalytics}"
     local superset_db="${SUPERSET_DB:-superset}"
@@ -912,20 +927,57 @@ start_services() {
     cd "$DEPLOY_DIR"
 
     # Load branding prefix from .env
-    source "$DEPLOY_DIR/.env" 2>/dev/null || true
+    set -a; source "$DEPLOY_DIR/.env" 2>/dev/null || true; set +a
 
     # Start all services with bundled PostgreSQL profile
     docker compose --profile bundled-db up -d
 
     log_info "Waiting for services to be healthy..."
 
-    local services=("pravaha-postgres" "pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-nginx")
+    # All 12 services with per-service timeouts (attempts * interval)
+    # ML service: 72*5=360s (start_period=300s + margin)
+    # Superset: 42*5=210s (start_period=180s + margin)
+    # Backend: 24*5=120s
+    # Postgres: 24*5=120s
+    # Celery workers: 18*5=90s
+    # Others: 12*5=60s
+    local -A service_timeouts=(
+        ["pravaha-postgres"]=24
+        ["pravaha-redis"]=12
+        ["pravaha-backend"]=24
+        ["pravaha-frontend"]=12
+        ["pravaha-superset"]=42
+        ["pravaha-ml-service"]=72
+        ["pravaha-nginx"]=12
+        ["pravaha-celery-training"]=18
+        ["pravaha-celery-prediction"]=18
+        ["pravaha-celery-monitoring"]=18
+        ["pravaha-celery-beat"]=18
+        ["pravaha-jupyter"]=12
+    )
     local failed=0
 
-    for service in "${services[@]}"; do
-        if ! wait_for_healthy "$service" 90 5; then
-            log_warning "$service did not become healthy"
-            failed=1
+    for service in "pravaha-postgres" "pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-superset" "pravaha-ml-service" "pravaha-nginx" "pravaha-celery-training" "pravaha-celery-prediction" "pravaha-celery-monitoring" "pravaha-celery-beat" "pravaha-jupyter"; do
+        local attempts=${service_timeouts[$service]:-12}
+        if ! wait_for_healthy "$service" "$attempts" 5; then
+            # For celery workers and jupyter, check if process is at least running
+            case "$service" in
+                *celery*)
+                    if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
+                        log_warning "$service is running (health check inconclusive)"
+                    else
+                        log_warning "$service did not become healthy"
+                        failed=1
+                    fi
+                    ;;
+                *jupyter*)
+                    log_warning "$service did not become healthy (non-critical)"
+                    ;;
+                *)
+                    log_warning "$service did not become healthy"
+                    failed=1
+                    ;;
+            esac
         fi
     done
 
@@ -947,7 +999,7 @@ run_verification() {
     log_info "Running post-installation verification..."
 
     # Load branding prefix from .env
-    source "$DEPLOY_DIR/.env" 2>/dev/null || true
+    set -a; source "$DEPLOY_DIR/.env" 2>/dev/null || true; set +a
 
     local verification_failed=0
 
@@ -996,11 +1048,28 @@ run_verification() {
     fi
 
     # Check Redis
-    if docker exec "pravaha-redis" redis-cli ping 2>/dev/null | grep -q "PONG"; then
+    if docker exec ${REDIS_PASSWORD:+-e REDISCLI_AUTH="$REDIS_PASSWORD"} pravaha-redis redis-cli ping 2>/dev/null | grep -q "PONG"; then
         log_success "Redis health check passed"
     else
         log_warning "Redis health check failed"
         verification_failed=1
+    fi
+
+    # Check Jupyter (non-critical - platform works without it)
+    local jupyter_healthy=false
+    for i in {1..6}; do
+        if docker exec pravaha-jupyter curl -sf http://localhost:8888/notebooks/api/status 2>/dev/null; then
+            jupyter_healthy=true
+            break
+        fi
+        log_info "Waiting for Jupyter... (attempt $i/6)"
+        sleep 5
+    done
+
+    if [[ "$jupyter_healthy" == "true" ]]; then
+        log_success "Jupyter Notebook health check passed"
+    else
+        log_warning "Jupyter Notebook health check failed (non-critical)"
     fi
 
     # Run comprehensive verification script

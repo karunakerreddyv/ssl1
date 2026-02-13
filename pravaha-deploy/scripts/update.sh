@@ -12,6 +12,7 @@
 #   ./update.sh --skip-file-update                 # Skip deployment file updates
 #   ./update.sh --no-rollback                      # Disable automatic rollback
 #   ./update.sh --dry-run                          # Show what would happen
+#   ./update.sh --yes                              # Skip interactive prompts (CI/CD)
 #
 # Features:
 #   - Creates checkpoint before update for instant rollback
@@ -41,6 +42,7 @@ DRY_RUN=false
 HEALTH_TIMEOUT=300  # 5 minutes for all services to be healthy
 RELEASE_DIR=""
 SKIP_FILE_UPDATE=false
+FORCE_YES=false
 UPDATE_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
 # Colors
@@ -84,6 +86,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_FILE_UPDATE=true
             shift
             ;;
+        --yes|-y)
+            FORCE_YES=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 <version> [options]"
             echo ""
@@ -94,6 +100,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --timeout <sec>       Health check timeout (default: 300)"
             echo "  --release-dir <path>  Directory containing new release files"
             echo "  --skip-file-update    Skip deployment file updates"
+            echo "  --yes, -y             Skip interactive prompts (for CI/CD automation)"
             echo ""
             echo "Examples:"
             echo "  $0 v2.1.0                              # Update to v2.1.0"
@@ -201,6 +208,9 @@ get_service_list() {
     services+=("pravaha-superset")
     services+=("pravaha-ml-service")
     services+=("pravaha-nginx")
+
+    # Jupyter
+    services+=("pravaha-jupyter")
 
     # Celery workers
     services+=("pravaha-celery-training")
@@ -443,18 +453,18 @@ merge_env() {
     local added_count=0
 
     if [[ ! -f "$env_example" ]]; then
-        log_info "No .env.example found, skipping env merge"
+        log_info "No .env.example found, skipping env merge" >&2
         echo "0"
         return 0
     fi
 
     if [[ ! -f "$env_file" ]]; then
-        log_error ".env file not found: $env_file"
+        log_error ".env file not found: $env_file" >&2
         echo "0"
         return 1
     fi
 
-    log_info "Merging new environment variables from .env.example..."
+    log_info "Merging new environment variables from .env.example..." >&2
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip empty lines
@@ -477,15 +487,15 @@ merge_env() {
                 echo "# Added in version $NEW_VERSION ($(date +%Y-%m-%d))" >> "$env_file"
                 echo "$line" >> "$env_file"
                 added_count=$((added_count + 1))
-                log_info "  Added new variable: $key"
+                log_info "  Added new variable: $key" >&2
             fi
         fi
     done < "$env_example"
 
     if [[ $added_count -gt 0 ]]; then
-        log_success "Merged $added_count new environment variable(s) into .env"
+        log_success "Merged $added_count new environment variable(s) into .env" >&2
     else
-        log_info "No new environment variables to merge"
+        log_info "No new environment variables to merge" >&2
     fi
 
     echo "$added_count"
@@ -628,15 +638,16 @@ if [[ "$DRY_RUN" == "true" ]]; then
     fi
     echo "      b. Redis (wait healthy)"
     echo "      c. All remaining services (backend, frontend, superset, ml-service, etc.)"
-    echo "  13. Health checks (dynamic service list, ${HEALTH_TIMEOUT}s timeout)"
+    echo "  13. Wait for core infrastructure + run migrations:"
+    echo "      a. Wait for PostgreSQL (if bundled) + backend"
+    echo "      b. Backend: compose_cmd exec -T backend npm run db:migrate"
+    echo "      c. Superset: compose_cmd exec -T superset superset db upgrade"
+    echo "  14. Health checks (all services, post-migration, ${HEALTH_TIMEOUT}s timeout)"
 
     # Build the service list for display
     service_display=$(get_service_list)
     echo "      Services: $service_display"
 
-    echo "  14. Run migrations:"
-    echo "      a. Backend: compose_cmd exec -T backend npm run db:migrate"
-    echo "      b. Superset: compose_cmd exec -T superset superset db upgrade"
     echo "  15. Final verification (health-check.sh if available)"
     echo "  16. Result handling (success message or auto-rollback with file restoration)"
     echo ""
@@ -646,6 +657,18 @@ if [[ "$DRY_RUN" == "true" ]]; then
     echo "  - Pull previous version images"
     echo "  - Restart with previous version in dependency order"
     exit 0
+fi
+
+# =============================================================================
+# Concurrent execution guard (flock)
+# Prevents multiple update/rollback operations from running simultaneously
+# =============================================================================
+LOCK_FILE="$DEPLOY_DIR/.pravaha-update.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    log_error "Another update or rollback operation is already in progress."
+    log_error "If you're sure no other operation is running, remove: $LOCK_FILE"
+    exit 1
 fi
 
 # =============================================================================
@@ -663,10 +686,14 @@ source_env
 # =============================================================================
 if [[ "$CURRENT_VERSION" == "$NEW_VERSION" ]]; then
     log_warning "Already running version $NEW_VERSION"
-    read -p "Continue anyway? (yes/no): " confirm
-    if [[ "$confirm" != "yes" ]]; then
-        log_info "Update cancelled by user"
-        exit 0
+    if [[ "$FORCE_YES" != "true" ]]; then
+        read -p "Continue anyway? (yes/no): " confirm
+        if [[ "$confirm" != "yes" ]]; then
+            log_info "Update cancelled by user"
+            exit 0
+        fi
+    else
+        log_info "Same version detected, proceeding (--yes flag set)"
     fi
 fi
 
@@ -836,7 +863,7 @@ echo ""
 # Step 9: Update IMAGE_TAG in .env
 # =============================================================================
 log_info "Updating IMAGE_TAG from $CURRENT_VERSION to $NEW_VERSION..."
-sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$NEW_VERSION/" .env
+sed "s|^IMAGE_TAG=.*|IMAGE_TAG=$NEW_VERSION|" .env > .env.tmp && mv .env.tmp .env
 
 # =============================================================================
 # Step 10: Pull New Images with Retry
@@ -844,7 +871,7 @@ sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$NEW_VERSION/" .env
 if ! pull_images_with_retry; then
     log_error "Failed to pull new images after multiple retries!"
     log_info "Restoring previous IMAGE_TAG..."
-    sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$CURRENT_VERSION/" .env
+    sed "s|^IMAGE_TAG=.*|IMAGE_TAG=$CURRENT_VERSION|" .env > .env.tmp && mv .env.tmp .env
     if [[ "$FILES_UPDATED" == "true" ]]; then
         log_info "Restoring deployment files..."
         restore_file_backups "$UPDATE_TIMESTAMP"
@@ -855,7 +882,33 @@ fi
 # =============================================================================
 # Step 11: Stop Services Gracefully
 # =============================================================================
+
+# Set EXIT trap to ensure services are restarted if script fails unexpectedly
+# after stopping them (e.g., SIGTERM, unhandled error, OOM kill).
+SERVICES_STOPPED=false
+cleanup_on_failure() {
+    local exit_code=$?
+    if [[ "$SERVICES_STOPPED" == "true" && $exit_code -ne 0 ]]; then
+        echo ""
+        log_error "Script exited unexpectedly (exit code $exit_code) while services were stopped!"
+        log_warning "Attempting emergency service restart..."
+        # Re-source env in case it was corrupted
+        if [[ -f "$DEPLOY_DIR/.env" ]]; then
+            set -a; source "$DEPLOY_DIR/.env" 2>/dev/null || true; set +a
+            POSTGRES_MODE="${POSTGRES_MODE:-bundled}"
+        fi
+        compose_cmd up -d 2>/dev/null || true
+        log_info "Emergency restart issued. Check service status: docker compose ps"
+        log_info "If services are unhealthy, restore from checkpoint: ./scripts/rollback.sh --checkpoint $CHECKPOINT_NAME"
+    fi
+}
+trap cleanup_on_failure EXIT
+
 log_info "Stopping services gracefully..."
+
+# Mark services as being stopped BEFORE any stop command, so the EXIT trap
+# can restart them if the script fails during the stop/down sequence.
+SERVICES_STOPPED=true
 
 # Stop Celery workers first (they may have in-flight tasks)
 compose_cmd stop celery-beat celery-worker-monitoring celery-worker-prediction celery-worker-training 2>/dev/null || true
@@ -867,7 +920,6 @@ compose_cmd down --timeout 60 || {
     compose_cmd kill 2>/dev/null || true
     compose_cmd down 2>/dev/null || true
 }
-
 log_success "Services stopped"
 
 # =============================================================================
@@ -877,58 +929,81 @@ if ! start_services_ordered; then
     log_error "Failed to start services in order!"
     ALL_HEALTHY=false
 else
+    SERVICES_STOPPED=false  # Services are running again, disable emergency restart
     log_success "Services started in dependency order"
     ALL_HEALTHY=true
 
     # =============================================================================
-    # Step 13: Health Checks (all services)
+    # Step 13: Wait for Core Infrastructure + Run Migrations
+    # Migrations MUST run BEFORE full health checks because backend and superset
+    # may fail health checks if the database schema is outdated.
     # =============================================================================
-    log_info "Running health checks (timeout: ${HEALTH_TIMEOUT}s)..."
+    log_info "Waiting for core infrastructure before running migrations..."
 
-    # Get the full service list
-    IFS=' ' read -ra SERVICE_LIST <<< "$(get_service_list)"
+    # Wait for postgres and backend to be ready (needed for migrations)
+    if [[ "${POSTGRES_MODE:-bundled}" == "bundled" ]]; then
+        log_info "  Waiting for PostgreSQL..."
+        if ! wait_for_healthy "pravaha-postgres" 120; then
+            log_error "  PostgreSQL failed to become healthy for migrations"
+            ALL_HEALTHY=false
+        fi
+    fi
 
-    for service in "${SERVICE_LIST[@]}"; do
-        # Determine timeout per service type
-        svc_timeout=90
-        case "$service" in
-            *postgres*)  svc_timeout=120 ;;
-            *superset*)  svc_timeout=120 ;;
-            *backend*)   svc_timeout=90  ;;
-            *ml-service*) svc_timeout=90  ;;
-            *celery*)    svc_timeout=60  ;;
-            *redis*)     svc_timeout=60  ;;
-            *)           svc_timeout=60  ;;
-        esac
+    if [[ "$ALL_HEALTHY" == "true" ]]; then
+        log_info "  Waiting for backend to accept connections..."
+        if ! wait_for_healthy "pravaha-backend" 120; then
+            log_warning "  Backend not yet healthy, attempting migrations anyway..."
+        fi
 
-        log_info "  Waiting for $service (timeout: ${svc_timeout}s)..."
-        if wait_for_healthy "$service" "$svc_timeout"; then
-            log_success "  $service is healthy"
-        else
-            # For celery workers, check if process is at least running
+        # Run migrations before checking all services
+        run_migrations
+    fi
+
+    # =============================================================================
+    # Step 14: Health Checks (all services, post-migration)
+    # =============================================================================
+    if [[ "$ALL_HEALTHY" == "true" ]]; then
+        log_info "Running health checks (timeout: ${HEALTH_TIMEOUT}s)..."
+
+        # Get the full service list
+        IFS=' ' read -ra SERVICE_LIST <<< "$(get_service_list)"
+
+        for service in "${SERVICE_LIST[@]}"; do
+            # Determine timeout per service type
+            # ML service needs 360s (docker-compose start_period is 300s + margin)
+            # Superset needs 210s (docker-compose start_period is 180s + margin)
+            svc_timeout=90
             case "$service" in
-                *celery*)
-                    if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
-                        log_warning "  $service is running (health check inconclusive)"
-                    else
+                *postgres*)   svc_timeout=120 ;;
+                *superset*)   svc_timeout=210 ;;
+                *backend*)    svc_timeout=120 ;;
+                *ml-service*) svc_timeout=360 ;;
+                *celery*)     svc_timeout=90  ;;
+                *redis*)      svc_timeout=60  ;;
+                *)            svc_timeout=60  ;;
+            esac
+
+            log_info "  Waiting for $service (timeout: ${svc_timeout}s)..."
+            if wait_for_healthy "$service" "$svc_timeout"; then
+                log_success "  $service is healthy"
+            else
+                # For non-critical services (celery, jupyter), check if process is at least running
+                case "$service" in
+                    *celery*|*jupyter*)
+                        if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
+                            log_warning "  $service is running (health check inconclusive)"
+                        else
+                            log_warning "  $service is not running (non-critical, will not trigger rollback)"
+                        fi
+                        ;;
+                    *)
                         log_error "  $service failed to become healthy"
                         ALL_HEALTHY=false
-                    fi
-                    ;;
-                *)
-                    log_error "  $service failed to become healthy"
-                    ALL_HEALTHY=false
-                    ;;
-            esac
-        fi
-    done
-fi
-
-# =============================================================================
-# Step 14: Run Migrations (if services are healthy)
-# =============================================================================
-if [[ "$ALL_HEALTHY" == "true" ]]; then
-    run_migrations
+                        ;;
+                esac
+            fi
+        done
+    fi
 fi
 
 # =============================================================================
@@ -937,7 +1012,7 @@ fi
 if [[ "$ALL_HEALTHY" == "true" ]]; then
     if [[ -x "$DEPLOY_DIR/scripts/health-check.sh" ]]; then
         log_info "Running comprehensive health check..."
-        if "$DEPLOY_DIR/scripts/health-check.sh" --quiet 2>&1; then
+        if "$DEPLOY_DIR/scripts/health-check.sh" --quiet --exit-code 2>&1; then
             log_success "Comprehensive health check passed"
         else
             log_warning "Comprehensive health check reported issues"
@@ -1032,6 +1107,7 @@ else
         # -------------------------------------------------------------------
         log_info "Starting services with previous version ($CURRENT_VERSION)..."
         if start_services_ordered; then
+            SERVICES_STOPPED=false
             # Wait for services to stabilize
             log_info "Waiting for services to stabilize after rollback..."
             sleep 15
@@ -1042,12 +1118,11 @@ else
             for service in "${ROLLBACK_SERVICES[@]}"; do
                 if ! wait_for_healthy "$service" 60; then
                     case "$service" in
-                        *celery*)
+                        *celery*|*jupyter*)
                             if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
                                 log_warning "  $service is running after rollback"
                             else
-                                log_error "  $service failed after rollback"
-                                rollback_healthy=false
+                                log_warning "  $service is not running after rollback (non-critical)"
                             fi
                             ;;
                         *)

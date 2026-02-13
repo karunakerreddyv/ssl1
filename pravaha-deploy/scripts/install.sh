@@ -17,6 +17,9 @@
 
 set -euo pipefail
 
+# Capture original command-line arguments for audit logging
+ORIGINAL_ARGS="$*"
+
 # =============================================================================
 # Global Configuration
 # =============================================================================
@@ -188,15 +191,14 @@ retry_with_backoff() {
     local base_delay=${2:-2}
     local max_delay=${3:-60}
     shift 3
-    local cmd="$@"
 
     local attempt=1
     local delay=$base_delay
 
     while [[ $attempt -le $max_attempts ]]; do
-        log_info "Attempt $attempt of $max_attempts: $cmd"
+        log_info "Attempt $attempt of $max_attempts: $*"
 
-        if eval "$cmd"; then
+        if "$@"; then
             return 0
         fi
 
@@ -211,7 +213,7 @@ retry_with_backoff() {
         attempt=$((attempt + 1))
     done
 
-    log_error "Command failed after $max_attempts attempts: $cmd"
+    log_error "Command failed after $max_attempts attempts: $*"
     return 1
 }
 
@@ -409,7 +411,7 @@ Hostname:     $(hostname)
 OS:           $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2)
 Script:       $0
 Version:      $SCRIPT_VERSION
-Arguments:    $@
+Arguments:    $ORIGINAL_ARGS
 Working Dir:  $(pwd)
 ================================================================================
 
@@ -781,6 +783,7 @@ setup_deployment_dir() {
     mkdir -p "$deploy_dir/ssl"
     mkdir -p "$deploy_dir/backups"
     mkdir -p "$deploy_dir/logs"
+    mkdir -p "$deploy_dir/notebooks"
 
     # Copy deployment files only if source and destination are different
     if [[ "$script_dir" != "$deploy_dir" ]]; then
@@ -844,6 +847,7 @@ generate_secrets() {
         log_info ".env file exists with CHANGE_ME placeholders. Generating secrets..."
     else
         cp "$1/.env.example" "$env_file"
+        chmod 600 "$env_file"
     fi
 
     # Generate unique secrets for each placeholder
@@ -852,13 +856,12 @@ generate_secrets() {
     local superset_secret=$(openssl rand -base64 48 | tr -d '\n/+=')
     local encryption_key=$(openssl rand -hex 16)
     local postgres_password=$(openssl rand -base64 24 | tr -d '\n/+=')
-    local admin_password=$(openssl rand -base64 16 | tr -d '\n/+=')
     local grafana_password=$(openssl rand -base64 16 | tr -d '\n/+=')
     local ml_service_api_key=$(openssl rand -base64 32 | tr -d '\n/+=')
     local ml_service_hmac_secret=$(openssl rand -hex 32)
     local csrf_secret=$(openssl rand -base64 32 | tr -d '\n/+=')
     local session_secret=$(openssl rand -base64 48 | tr -d '\n/+=')
-    local jupyter_token=$(openssl rand -base64 32 | tr -d '\n/+=')
+    local jupyter_token=$(openssl rand -hex 32)
     # Each 64-char hex secret must be unique for security
     local lineage_secret=$(openssl rand -hex 32)
     local credential_master_key=$(openssl rand -hex 32)
@@ -871,16 +874,24 @@ generate_secrets() {
     local storage_encryption_key=$(openssl rand -hex 32)
     local evidence_hmac_secret=$(openssl rand -hex 32)
     # ML Credential Encryption Key (Fernet key - URL-safe base64 encoded 32 bytes)
+    # Fernet requires exactly 44 chars: 32 random bytes → urlsafe_b64encode → ends with '='
     # Must use python3 + cryptography for valid Fernet key format
     local ml_credential_encryption_key
     if command -v python3 &>/dev/null; then
         ml_credential_encryption_key=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null)
     fi
     if [[ -z "$ml_credential_encryption_key" ]]; then
-        # Fallback: generate URL-safe base64 key compatible with Fernet (32 random bytes → urlsafe_b64encode)
-        ml_credential_encryption_key=$(python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" 2>/dev/null \
-            || openssl rand 32 | base64 | tr '+/' '-_')
-        log_warning "Generated Fernet key via fallback. Verify ML credential encryption works after startup."
+        # Fallback 1: python3 without cryptography library (uses stdlib only)
+        ml_credential_encryption_key=$(python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" 2>/dev/null)
+    fi
+    if [[ -z "$ml_credential_encryption_key" ]]; then
+        # Fallback 2: openssl + tr (preserves '=' padding required by Fernet)
+        ml_credential_encryption_key=$(openssl rand -base64 32 | tr '+/' '-_' | head -c 44)
+        # Fernet keys MUST be exactly 44 chars (32 bytes base64-encoded with padding)
+        if [[ ${#ml_credential_encryption_key} -ne 44 ]]; then
+            ml_credential_encryption_key="${ml_credential_encryption_key}="
+        fi
+        log_warning "Generated Fernet key via openssl fallback. Verify ML credential encryption works after startup."
     fi
     local internal_service_key=$(openssl rand -base64 32 | tr -d '\n/+=')
 
@@ -917,23 +928,25 @@ generate_secrets() {
     sed -i "s|^EVIDENCE_HMAC_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_EVIDENCE|EVIDENCE_HMAC_SECRET=$evidence_hmac_secret|" "$env_file"
     sed -i "s|^ML_SERVICE_HMAC_SECRET=CHANGE_ME_GENERATE_64_CHAR_HEX_ML_HMAC|ML_SERVICE_HMAC_SECRET=$ml_service_hmac_secret|" "$env_file"
     sed -i "s|^ML_CREDENTIAL_ENCRYPTION_KEY=CHANGE_ME_GENERATE_FERNET_KEY|ML_CREDENTIAL_ENCRYPTION_KEY=$ml_credential_encryption_key|" "$env_file"
-    sed -i "s|^SESSION_SECRET=.*|SESSION_SECRET=$session_secret|" "$env_file"
-    sed -i "s|^INTERNAL_SERVICE_KEY=.*|INTERNAL_SERVICE_KEY=$internal_service_key|" "$env_file"
+    sed -i "s|^SESSION_SECRET=$|SESSION_SECRET=$session_secret|" "$env_file"
+    sed -i "s|^INTERNAL_SERVICE_KEY=CHANGE_ME_GENERATE_INTERNAL_SERVICE_KEY|INTERNAL_SERVICE_KEY=$internal_service_key|" "$env_file"
 
     # Generate platform admin credentials
     local platform_admin_email="admin@${domain:-example.com}"
     local platform_admin_password=$(openssl rand -base64 18 | tr -d '\n/+=')
 
     # Replace admin credential placeholders
-    sed -i "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=$platform_admin_email|" "$env_file"
+    sed -i "s|^ADMIN_EMAIL=admin@example.com|ADMIN_EMAIL=$platform_admin_email|" "$env_file"
     sed -i "s|^ADMIN_PASSWORD=CHANGE_ME_ADMIN_PASSWORD|ADMIN_PASSWORD=$platform_admin_password|" "$env_file"
 
     # Update SUPERSET_ADMIN_EMAIL to match platform admin (not admin@example.com)
-    sed -i "s|^SUPERSET_ADMIN_EMAIL=.*|SUPERSET_ADMIN_EMAIL=$platform_admin_email|" "$env_file"
+    sed -i "s|^SUPERSET_ADMIN_EMAIL=admin@example.com|SUPERSET_ADMIN_EMAIL=$platform_admin_email|" "$env_file"
 
     # Replace other placeholders
+    # IMPORTANT: Use platform_admin_password for ALL admin password placeholders
+    # so SUPERSET_ADMIN_PASSWORD matches ADMIN_PASSWORD (same credentials)
     sed -i "s|CHANGE_ME_SECURE_PASSWORD|$postgres_password|g" "$env_file"
-    sed -i "s|CHANGE_ME_ADMIN_PASSWORD|$admin_password|g" "$env_file"
+    sed -i "s|CHANGE_ME_ADMIN_PASSWORD|$platform_admin_password|g" "$env_file"
     sed -i "s|CHANGE_ME_GRAFANA_PASSWORD|$grafana_password|g" "$env_file"
     # Generate and replace GRAFANA_SECRET_KEY
     local grafana_secret_key=$(openssl rand -base64 24 | tr -d '\n/+=')
@@ -970,7 +983,12 @@ setup_letsencrypt() {
     log_info "Setting up Let's Encrypt SSL for $domain..."
 
     # Stop any services using port 80 temporarily
-    docker compose -f "$deploy_dir/docker-compose.yml" stop nginx 2>/dev/null || true
+    local pg_mode="${POSTGRES_MODE:-bundled}"
+    if [[ "$pg_mode" == "bundled" ]]; then
+        docker compose --profile bundled-db -f "$deploy_dir/docker-compose.yml" stop nginx 2>/dev/null || true
+    else
+        docker compose -f "$deploy_dir/docker-compose.yml" stop nginx 2>/dev/null || true
+    fi
 
     # Get certificate using standalone mode (simpler, works without running webserver)
     certbot certonly --standalone \
@@ -984,10 +1002,15 @@ setup_letsencrypt() {
     cp "/etc/letsencrypt/live/$domain/fullchain.pem" "$deploy_dir/ssl/"
     cp "/etc/letsencrypt/live/$domain/privkey.pem" "$deploy_dir/ssl/"
 
-    # Setup auto-renewal with pre/post hooks
-    cat > /etc/cron.d/certbot-renewal << EOF
-0 0,12 * * * root certbot renew --quiet --pre-hook "docker compose -f $deploy_dir/docker-compose.yml stop nginx || true" --post-hook "cp /etc/letsencrypt/live/$domain/*.pem $deploy_dir/ssl/ && docker compose -f $deploy_dir/docker-compose.yml start nginx"
-EOF
+    # Setup auto-renewal with pre/post hooks (POSTGRES_MODE-aware)
+    # Use --profile bundled-db to ensure all services are properly managed
+    cat > /etc/cron.d/certbot-renewal << 'CRONEOF'
+SHELL=/bin/bash
+0 0,12 * * * root DEPLOY_DIR=DEPLOY_DIR_PLACEHOLDER && source "$DEPLOY_DIR/.env" 2>/dev/null; PG_MODE="${POSTGRES_MODE:-bundled}"; if [ "$PG_MODE" = "bundled" ]; then PROFILE="--profile bundled-db"; else PROFILE=""; fi; certbot renew --quiet --pre-hook "docker compose $PROFILE -f $DEPLOY_DIR/docker-compose.yml stop nginx || true" --post-hook "cp /etc/letsencrypt/live/DOMAIN_PLACEHOLDER/*.pem $DEPLOY_DIR/ssl/ && docker compose $PROFILE -f $DEPLOY_DIR/docker-compose.yml start nginx"
+CRONEOF
+    # Replace placeholders with actual values
+    sed -i "s|DEPLOY_DIR_PLACEHOLDER|$deploy_dir|g" /etc/cron.d/certbot-renewal
+    sed -i "s|DOMAIN_PLACEHOLDER|$domain|g" /etc/cron.d/certbot-renewal
 
     log_success "SSL certificate obtained and auto-renewal configured"
 }
@@ -1038,10 +1061,11 @@ EOF
 # Authenticate with container registry
 authenticate_registry() {
     local deploy_dir=$1
+    local registry=""
 
     # Source .env to get registry configuration
     if [[ -f "$deploy_dir/.env" ]]; then
-        local registry=$(grep "^REGISTRY=" "$deploy_dir/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+        registry=$(grep "^REGISTRY=" "$deploy_dir/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
     fi
     registry="${registry:-ghcr.io/talentfino/pravaha}"
 
@@ -1143,7 +1167,7 @@ pull_images() {
 
     # Pull images with retry logic (network can be flaky)
     # Include bundled-db profile to also pre-pull postgres image
-    if ! retry_with_backoff 3 5 60 "docker compose --profile bundled-db pull"; then
+    if ! retry_with_backoff 3 5 60 docker compose --profile bundled-db pull; then
         log_error "Failed to pull Docker images after multiple attempts"
         log_error ""
         log_error "Troubleshooting steps:"
@@ -1170,8 +1194,10 @@ init_database() {
 
     cd "$deploy_dir"
 
-    # Load environment variables
+    # Load environment variables (set -a exports them for child processes)
+    set -a
     source "$deploy_dir/.env" 2>/dev/null || true
+    set +a
     local pg_mode="${POSTGRES_MODE:-bundled}"
     local pg_user="${POSTGRES_USER:-pravaha}"
     local pg_host="${POSTGRES_HOST:-postgres}"
@@ -1312,8 +1338,10 @@ start_services() {
 
     cd "$deploy_dir"
 
-    # Load environment variables to check POSTGRES_MODE
+    # Load environment variables to check POSTGRES_MODE (set -a exports them for child processes)
+    set -a
     source "$deploy_dir/.env" 2>/dev/null || true
+    set +a
     local pg_mode="${POSTGRES_MODE:-bundled}"
 
     # Start services with appropriate profile
@@ -1327,21 +1355,48 @@ start_services() {
 
     log_info "Waiting for services to be healthy..."
 
-    # Build service list based on POSTGRES_MODE
+    # Build service list based on POSTGRES_MODE (all 12 services)
     local services
     if [[ "$pg_mode" == "bundled" ]]; then
-        services=("pravaha-postgres" "pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-nginx")
+        services=("pravaha-postgres" "pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-superset" "pravaha-ml-service" "pravaha-jupyter" "pravaha-nginx" "pravaha-celery-training" "pravaha-celery-prediction" "pravaha-celery-monitoring" "pravaha-celery-beat")
     else
         # External PostgreSQL - don't wait for bundled postgres container
-        services=("pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-nginx")
+        services=("pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-superset" "pravaha-ml-service" "pravaha-jupyter" "pravaha-nginx" "pravaha-celery-training" "pravaha-celery-prediction" "pravaha-celery-monitoring" "pravaha-celery-beat")
     fi
 
     local failed=0
 
     for service in "${services[@]}"; do
-        if ! wait_for_healthy "$service" 60 5; then
-            log_warning "$service did not become healthy"
-            failed=1
+        # Determine timeout per service type
+        # ML service needs 72 attempts * 5s = 360s (docker-compose start_period=300s + margin)
+        # Superset needs 42 attempts * 5s = 210s (docker-compose start_period=180s + margin)
+        local max_attempts=60
+        case "$service" in
+            *ml-service*) max_attempts=72 ;;
+            *superset*)   max_attempts=42 ;;
+            *postgres*)   max_attempts=24 ;;
+            *backend*)    max_attempts=24 ;;
+            *celery*)     max_attempts=18 ;;
+            *jupyter*)    max_attempts=12 ;;
+            *)            max_attempts=12 ;;
+        esac
+
+        if ! wait_for_healthy "$service" "$max_attempts" 5; then
+            # Celery workers may not have health checks — check if at least running
+            case "$service" in
+                *celery*)
+                    if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
+                        log_warning "$service is running (health check inconclusive)"
+                    else
+                        log_warning "$service did not become healthy"
+                        failed=1
+                    fi
+                    ;;
+                *)
+                    log_warning "$service did not become healthy"
+                    failed=1
+                    ;;
+            esac
         fi
     done
 
@@ -1431,14 +1486,16 @@ The following secrets were auto-generated. Review in \`$deploy_dir/.env\`:
 
 ---
 
-## Optional Services
+## Core Services
 
 ### Jupyter Notebook Server
-\`\`\`bash
-cd $deploy_dir
-docker compose -f docker-compose.jupyter.yml up -d
-# Access at http://localhost:8888
-\`\`\`
+Jupyter is included as a core service and starts automatically.
+Access notebooks at: https://$domain/notebooks/
+Jupyter token: stored in .env file (JUPYTER_TOKEN)
+
+---
+
+## Optional Services
 
 ### Grafana Logging Stack
 \`\`\`bash
@@ -1768,6 +1825,7 @@ main() {
         echo "      - Start: nginx, frontend, backend, superset, ml-service"
         echo "      - Start: celery-worker-training, celery-worker-prediction"
         echo "      - Start: celery-worker-monitoring, celery-beat"
+        echo "      - Start: jupyter"
         echo "      - Start: postgres, redis"
         echo "      - Wait for all services to be healthy"
         echo ""
@@ -2045,6 +2103,11 @@ main() {
     log_step "Running post-installation verification..."
     save_checkpoint "verification" "in_progress"
 
+    # Ensure environment is loaded (may not be if --resume skipped init_database)
+    set -a
+    source "$DEPLOY_DIR/.env" 2>/dev/null || true
+    set +a
+
     # Verify all services are healthy
     local verification_failed=0
 
@@ -2103,12 +2166,29 @@ main() {
         verification_failed=1
     fi
 
-    # Check Redis
-    if docker exec pravaha-redis redis-cli ping 2>/dev/null | grep -q "PONG"; then
+    # Check Redis (use REDISCLI_AUTH to avoid exposing password in process list)
+    if docker exec ${REDIS_PASSWORD:+-e REDISCLI_AUTH="$REDIS_PASSWORD"} pravaha-redis redis-cli ping 2>/dev/null | grep -q "PONG"; then
         log_success "Redis health check passed"
     else
         log_warning "Redis health check failed"
         verification_failed=1
+    fi
+
+    # Check Jupyter (non-critical - platform works without it)
+    local jupyter_healthy=false
+    for i in {1..6}; do
+        if docker exec pravaha-jupyter curl -sf http://localhost:8888/notebooks/api/status 2>/dev/null; then
+            jupyter_healthy=true
+            break
+        fi
+        log_info "Waiting for Jupyter... (attempt $i/6)"
+        sleep 5
+    done
+
+    if [[ "$jupyter_healthy" == "true" ]]; then
+        log_success "Jupyter Notebook health check passed"
+    else
+        log_warning "Jupyter Notebook health check failed (non-critical)"
     fi
 
     # Run comprehensive health check if available

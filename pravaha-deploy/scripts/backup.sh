@@ -99,8 +99,20 @@ echo "Directory: $BACKUP_DIR"
 echo "Retention: $RETENTION backups"
 echo ""
 
+# Concurrent execution guard -- prevents running simultaneously with another backup/restore/update
+LOCK_FILE="$DEPLOY_DIR/.pravaha-backup.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    log_error "Another backup or restore operation is already in progress."
+    log_error "If you're sure no other operation is running, remove: $LOCK_FILE"
+    exit 1
+fi
+
 # Create backup directory
 mkdir -p "$BACKUP_DIR/$BACKUP_NAME"
+
+# Cleanup partial backup on failure
+trap "rm -rf '$BACKUP_DIR/$BACKUP_NAME' '$BACKUP_DIR/$BACKUP_NAME.tar.gz' 2>/dev/null; rm -f '$LOCK_FILE'" ERR INT TERM
 
 log_info "Starting backup: $BACKUP_NAME"
 
@@ -263,6 +275,31 @@ backup_volumes() {
     compose_cmd exec -T ml-service tar czf - /app/training_data 2>/dev/null \
         > "$BACKUP_DIR/$BACKUP_NAME/training_data.tar.gz" || log_warning "No training data to backup"
 
+    # Plugins (uploaded plugin packages + extracted)
+    log_info "  Backing up plugins..."
+    compose_cmd exec -T backend tar czf - /app/plugins 2>/dev/null \
+        > "$BACKUP_DIR/$BACKUP_NAME/plugins.tar.gz" || log_warning "No plugins to backup"
+
+    # Celery beat schedule (persistent scheduler state)
+    log_info "  Backing up celery beat schedule..."
+    compose_cmd exec -T celery-beat tar czf - /tmp/celerybeat-schedule 2>/dev/null \
+        > "$BACKUP_DIR/$BACKUP_NAME/celery_beat_schedule.tar.gz" || log_warning "No celery beat schedule to backup"
+
+    # Workflow configs (user-defined workflow configurations)
+    log_info "  Backing up workflow configs..."
+    compose_cmd exec -T backend tar czf - /app/workflow-configs 2>/dev/null \
+        > "$BACKUP_DIR/$BACKUP_NAME/workflow_configs.tar.gz" || log_warning "No workflow configs to backup"
+
+    # Jupyter notebooks (user notebooks and work files)
+    log_info "  Backing up Jupyter notebooks..."
+    compose_cmd exec -T jupyter tar czf - /home/jovyan/work 2>/dev/null \
+        > "$BACKUP_DIR/$BACKUP_NAME/jupyter_notebooks.tar.gz" || log_warning "No Jupyter notebooks to backup"
+
+    # Jupyter data (datasets and additional data)
+    log_info "  Backing up Jupyter data..."
+    compose_cmd exec -T jupyter tar czf - /home/jovyan/data 2>/dev/null \
+        > "$BACKUP_DIR/$BACKUP_NAME/jupyter_data.tar.gz" || log_warning "No Jupyter data to backup"
+
     log_success "Volume backups completed"
 }
 
@@ -293,7 +330,12 @@ cat > "$BACKUP_DIR/$BACKUP_NAME/manifest.json" << EOF
     "platform_db": "$PLATFORM_DB",
     "superset_db": "$SUPERSET_DB",
     "created_at": "$(date -Iseconds)",
-    "version": "$(cat "$DEPLOY_DIR/.env" 2>/dev/null | grep IMAGE_TAG | cut -d= -f2 || echo 'unknown')"
+    "version": "$(grep '^IMAGE_TAG=' "$DEPLOY_DIR/.env" 2>/dev/null | cut -d= -f2 || echo 'unknown')",
+    "contents": {
+        "databases": ["$PLATFORM_DB", "$SUPERSET_DB"],
+        "volumes": $(if [[ "$BACKUP_TYPE" == "full" ]]; then echo '["uploads", "ml_models", "superset_home", "ml_storage", "training_data", "plugins", "celery_beat_schedule", "workflow_configs", "jupyter_notebooks", "jupyter_data"]'; else echo '[]'; fi),
+        "config": $(if [[ "$BACKUP_TYPE" != "db-only" ]]; then echo 'true'; else echo 'false'; fi)
+    }
 }
 EOF
 
@@ -302,6 +344,9 @@ log_info "Compressing backup..."
 cd "$BACKUP_DIR"
 tar -czf "$BACKUP_NAME.tar.gz" "$BACKUP_NAME"
 rm -rf "$BACKUP_NAME"
+
+# Restrict backup permissions (contains secrets in .env)
+chmod 600 "$BACKUP_NAME.tar.gz"
 
 BACKUP_SIZE=$(du -h "$BACKUP_NAME.tar.gz" | cut -f1)
 log_success "Backup compressed: $BACKUP_SIZE"

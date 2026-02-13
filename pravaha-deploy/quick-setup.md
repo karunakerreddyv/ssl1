@@ -62,7 +62,7 @@ sudo tar xzf /tmp/pravaha-deploy.tar.gz -C /opt/pravaha
 ls /opt/pravaha/
 # Expected output:
 #   docker-compose.yml  docker-compose.build.yml  docker-compose.logging.yml
-#   docker-compose.metrics.yml  docker-compose.elk.yml  docker-compose.jupyter.yml
+#   docker-compose.metrics.yml  docker-compose.elk.yml
 #   .env.example  nginx/  scripts/  ssl/  monitoring/  logging/  ...
 ```
 
@@ -137,7 +137,7 @@ rm -f /tmp/pravaha-deploy.tar.gz /tmp/fullchain.pem /tmp/privkey.pem /tmp/brand.
 8. Creates default branding if custom branding not provided
 9. Pulls Docker images from registry
 10. Initializes PostgreSQL database + extensions
-11. Starts all services (11 containers)
+11. Starts all services (12 containers)
 12. Runs health checks on every service
 13. Prints credentials summary (admin email, password, URLs)
 
@@ -271,7 +271,7 @@ cd /opt/pravaha && docker compose ps
 ```
 
 ```bash
-# Expected: all 11 services should show "healthy" or "running"
+# Expected: all 12 services should show "healthy" or "running"
 #   pravaha-nginx          running (healthy)
 #   pravaha-frontend       running (healthy)
 #   pravaha-backend        running (healthy)
@@ -279,6 +279,7 @@ cd /opt/pravaha && docker compose ps
 #   pravaha-redis          running (healthy)
 #   pravaha-superset       running (healthy)
 #   pravaha-ml-service     running (healthy)
+#   pravaha-jupyter        running (healthy)
 #   pravaha-celery-training    running
 #   pravaha-celery-prediction  running
 #   pravaha-celery-beat        running
@@ -303,12 +304,11 @@ Access the platform at: `https://your-domain.com`
 ```
 /opt/pravaha/
 ├── .env                          ← auto-generated secrets from .env.example
-├── docker-compose.yml            ← main compose file (11 services)
+├── docker-compose.yml            ← main compose file (12 services)
 ├── docker-compose.build.yml      ← for building images locally (optional)
 ├── docker-compose.logging.yml    ← Loki + Promtail log aggregation (optional)
 ├── docker-compose.metrics.yml    ← Prometheus + Grafana metrics (optional)
 ├── docker-compose.elk.yml        ← ELK stack alternative (optional)
-├── docker-compose.jupyter.yml    ← JupyterHub notebooks (optional)
 ├── branding/
 │   └── pravaha/                  ← (or your custom brand folder)
 │       └── brand.json

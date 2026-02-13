@@ -159,7 +159,6 @@ verify_backup_contents() {
 
     # Extract to temp directory
     local temp_dir=$(mktemp -d)
-    trap "rm -rf $temp_dir" EXIT
 
     tar -xzf "$backup_file" -C "$temp_dir"
     local backup_dir="$temp_dir/$(ls "$temp_dir" | head -1)"
@@ -224,7 +223,7 @@ verify_backup_contents() {
 
     # Check volumes (if full backup)
     local volumes_found=0
-    for volume in "uploads.tar.gz" "ml_models.tar.gz" "superset_home.tar.gz"; do
+    for volume in "uploads.tar.gz" "ml_models.tar.gz" "superset_home.tar.gz" "ml_storage.tar.gz" "training_data.tar.gz" "plugins.tar.gz" "celery_beat_schedule.tar.gz" "workflow_configs.tar.gz" "jupyter_notebooks.tar.gz" "jupyter_data.tar.gz"; do
         if [[ -f "$backup_dir/$volume" ]]; then
             volumes_found=$((volumes_found + 1))
         fi
@@ -237,7 +236,6 @@ verify_backup_contents() {
     fi
 
     rm -rf "$temp_dir"
-    trap - EXIT
 
     return 0
 }
@@ -252,15 +250,20 @@ test_restore() {
 
     # Extract backup
     local temp_dir=$(mktemp -d)
-    trap "rm -rf $temp_dir" EXIT
+    local test_container="pravaha-restore-test-$$"
+
+    # Cleanup function for test_restore resources
+    test_restore_cleanup() {
+        docker stop "$test_container" 2>/dev/null || true
+        rm -rf "$temp_dir" 2>/dev/null || true
+    }
+    trap test_restore_cleanup EXIT
 
     tar -xzf "$backup_file" -C "$temp_dir"
     local backup_dir="$temp_dir/$(ls "$temp_dir" | head -1)"
 
     # Start a temporary postgres container
     log_info "Starting temporary PostgreSQL container..."
-
-    local test_container="pravaha-restore-test-$$"
 
     docker run -d --rm \
         --name "$test_container" \
@@ -331,9 +334,7 @@ test_restore() {
 
     # Cleanup
     log_info "  Cleaning up test container..."
-    docker stop "$test_container" 2>/dev/null || true
-
-    rm -rf "$temp_dir"
+    test_restore_cleanup
     trap - EXIT
 
     if [[ "$restore_success" == "true" ]]; then

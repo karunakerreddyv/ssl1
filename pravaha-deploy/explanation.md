@@ -38,6 +38,7 @@ Single-server deployment means running all components of the Pravaha Platform on
 - **ML Service**: Machine learning model training and predictions (Python/FastAPI)
 - **Task Queue**: Background job processing (Celery workers)
 - **BI Tool**: Business intelligence dashboards (Apache Superset)
+- **Notebooks**: Interactive data exploration and analysis (Jupyter)
 - **Reverse Proxy**: Routes traffic and handles SSL (NGINX)
 
 ### When to Use Single-Server Deployment
@@ -128,13 +129,13 @@ dig pravaha.yourcompany.com +short
 │  • Request routing              • Security headers                          │
 │  • Static file caching          • WebSocket support                         │
 └─────────────────────────────────────────────────────────────────────────────┘
-         │              │              │              │              │
-         ▼              ▼              ▼              ▼              ▼
-    ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
-    │Frontend │   │ Backend  │   │ Superset │   │ML Service│   │ Grafana  │
-    │  :80    │   │  :3000   │   │  :8088   │   │  :8001   │   │  :3000   │
-    │ (React) │   │ (Node.js)│   │ (Python) │   │(FastAPI) │   │(optional)│
-    └─────────┘   └────┬─────┘   └────┬─────┘   └────┬─────┘   └──────────┘
+         │              │              │              │              │         │
+         ▼              ▼              ▼              ▼              ▼         ▼
+    ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌────────┐ ┌──────────┐
+    │Frontend │   │ Backend  │   │ Superset │   │ML Service│   │Jupyter │ │ Grafana  │
+    │  :80    │   │  :3000   │   │  :8088   │   │  :8001   │   │ :8888  │ │  :3000   │
+    │ (React) │   │ (Node.js)│   │ (Python) │   │(FastAPI) │   │(Notebk)│ │(optional)│
+    └─────────┘   └────┬─────┘   └────┬─────┘   └────┬─────┘   └────────┘ └──────────┘
                        │              │              │
                        └──────────────┼──────────────┘
                                       │
@@ -173,7 +174,6 @@ When deployed, the following structure is created at `/opt/pravaha/`:
 │
 ├── docker-compose.yml              # Main file defining all services
 ├── docker-compose.build.yml        # For building images locally (optional)
-├── docker-compose.jupyter.yml      # Jupyter notebook service (optional)
 ├── docker-compose.elk.yml          # ELK logging stack (optional)
 ├── docker-compose.logging.yml      # Grafana/Loki logging (optional)
 │
@@ -561,15 +561,20 @@ Docker Compose handles the order based on `depends_on` configuration.
 Polls each service until healthy:
 ```
 Waiting for services to be healthy...
-  [1/7] PostgreSQL: Healthy ✓
-  [2/7] Redis: Healthy ✓
-  [3/7] Backend: Healthy ✓
-  [4/7] ML Service: Healthy ✓
-  [5/7] Superset: Healthy ✓
-  [6/7] Frontend: Healthy ✓
-  [7/7] NGINX: Healthy ✓
+  [1/12] PostgreSQL: Healthy ✓
+  [2/12] Redis: Healthy ✓
+  [3/12] Backend: Healthy ✓
+  [4/12] ML Service: Healthy ✓
+  [5/12] Superset: Healthy ✓
+  [6/12] Jupyter: Healthy ✓
+  [7/12] Frontend: Healthy ✓
+  [8/12] NGINX: Healthy ✓
+  [9/12] Celery Training: Healthy ✓
+  [10/12] Celery Prediction: Healthy ✓
+  [11/12] Celery Monitoring: Healthy ✓
+  [12/12] Celery Beat: Healthy ✓
 
-All services are running!
+All 12 services are running!
 ```
 
 #### Step 14: Complete Installation
@@ -771,6 +776,7 @@ echo | openssl s_client -connect pravaha.yourcompany.com:443 2>/dev/null | opens
 | postgres | postgres:17-alpine | 5432 (internal) | Database |
 | redis | redis:7-alpine | 6379 (internal) | Cache |
 | ml-service | pravaha-ml-service | 8001 | ML operations |
+| jupyter | jupyter/scipy-notebook | 8888 | Notebooks |
 | superset | pravaha-superset | 8088 | BI dashboards |
 | celery-worker-training | pravaha-ml-service | - | Training jobs |
 | celery-worker-prediction | pravaha-ml-service | - | Prediction jobs |
@@ -810,20 +816,30 @@ echo | openssl s_client -connect pravaha.yourcompany.com:443 2>/dev/null | opens
 | celery-prediction | 2 | 2 GB | Batch predictions |
 | celery-monitoring | 1 | 1 GB | Background tasks |
 | celery-beat | 1 | 1 GB | Scheduler only |
+| jupyter | 2 | 4 GB | Interactive notebooks |
 
-**Total**: ~20 CPU cores, ~19 GB RAM (with overhead, recommend 32 GB)
+**Total**: ~22 CPU cores, ~26 GB RAM (with overhead, recommend 32 GB)
 
 ### Volumes (Persistent Storage)
 
 | Volume | Purpose | Backup Priority |
 |--------|---------|-----------------|
-| postgres_data | Database files | Critical |
-| redis_data | Cache persistence | Low |
+| postgres_data | Database files | Critical (via pg_dump) |
+| redis_data | Cache persistence | Low (ephemeral) |
 | ml_models | Trained ML models | High |
+| ml_storage | ML artifacts storage | High |
 | training_data | Training datasets | High |
 | uploads | User file uploads | High |
-| app_logs | Application logs | Medium |
+| plugins | Installed plugins | High |
+| workflow_configs | Workflow configurations | High |
 | superset_home | Superset config | Medium |
+| jupyter_notebooks | Jupyter notebooks | High |
+| jupyter_data | Jupyter data files | Medium |
+| celery_beat_schedule | Celery scheduler state | Low |
+| app_logs | Application logs | Low (ephemeral) |
+| ml_logs | ML service logs | Low (ephemeral) |
+| nginx_logs | NGINX access/error logs | Low (ephemeral) |
+| certbot_www | Let's Encrypt challenge | Low (regeneratable) |
 
 ---
 
@@ -877,7 +893,7 @@ REDIS_URL=redis://redis:6379/0
 ```bash
 # Authentication
 JWT_SECRET=<auto-generated>
-JWT_EXPIRES_IN=24h
+JWT_EXPIRES_IN=7d
 
 # Encryption
 ENCRYPTION_KEY=<auto-generated>
@@ -975,7 +991,8 @@ ssl_session_timeout 1d;
 | Backend | `GET /health/live` | 200 OK (liveness) |
 | Backend | `GET /api/v1/health` | JSON with details |
 | ML Service | `GET /api/v1/health` | 200 OK |
-| Superset | `GET /health` | 200 OK |
+| Superset | `GET /insights/health` | 200 OK |
+| Jupyter | `GET /notebooks/api/status` | 200 OK |
 | PostgreSQL | `pg_isready` | Exit code 0 |
 | Redis | `redis-cli ping` | PONG |
 
@@ -1020,9 +1037,14 @@ Output example:
 ║ Frontend         │ ✓ UP    │ 12ms          │ HTTP 200      ║
 ║ ML Service       │ ✓ UP    │ 89ms          │ HTTP 200      ║
 ║ Superset         │ ✓ UP    │ 234ms         │ HTTP 200      ║
+║ Jupyter          │ ✓ UP    │ 15ms          │ HTTP 200      ║
 ║ NGINX            │ ✓ UP    │ 5ms           │ HTTP 200      ║
+║ Celery Training  │ ✓ UP    │ -             │ Running       ║
+║ Celery Prediction│ ✓ UP    │ -             │ Running       ║
+║ Celery Monitoring│ ✓ UP    │ -             │ Running       ║
+║ Celery Beat      │ ✓ UP    │ -             │ Running       ║
 ╠══════════════════╧═════════╧═══════════════╧═══════════════╣
-║ Overall Status: HEALTHY (7/7 services operational)         ║
+║ Overall Status: HEALTHY (12/12 services operational)       ║
 ╚════════════════════════════════════════════════════════════╝
 ```
 
@@ -1666,6 +1688,7 @@ Single-server deployment provides a complete Pravaha Platform installation on on
 | ML Service | FastAPI | Machine learning |
 | Task Queue | Celery | Background jobs |
 | BI Tool | Superset | Dashboards |
+| Notebooks | Jupyter | Interactive analysis |
 
 **Key Points**:
 - Use `install.sh` for automated deployment
@@ -1679,5 +1702,5 @@ For questions or issues, refer to the troubleshooting section or contact support
 
 ---
 
-*Document Version: 1.0.0*
-*Last Updated: January 2025*
+*Document Version: 1.1.0*
+*Last Updated: February 2026*

@@ -106,8 +106,17 @@ echo "Mode:    POSTGRES_MODE=$POSTGRES_MODE"
 echo "Dry run: $DRY_RUN"
 echo ""
 
-# Extract backup
+# Validate archive integrity before extraction
 TEMP_DIR=$(mktemp -d)
+trap "rm -rf '$TEMP_DIR'" EXIT
+log_info "Validating backup archive integrity..."
+if ! gzip -t "$BACKUP_FILE" 2>/dev/null; then
+    log_error "Backup archive is corrupted (gzip integrity check failed)"
+    log_error "File: $BACKUP_FILE"
+    exit 1
+fi
+
+# Extract backup
 log_info "Extracting backup..."
 tar -xzf "$BACKUP_FILE" -C "$TEMP_DIR"
 BACKUP_DIR="$TEMP_DIR/$(ls "$TEMP_DIR" | head -1)"
@@ -141,12 +150,38 @@ fi
 
 cd "$DEPLOY_DIR"
 
+# Concurrent execution guard (flock) -- prevents running simultaneously with update/rollback
+LOCK_FILE="$DEPLOY_DIR/.pravaha-update.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    log_error "Another update, rollback, or restore operation is already in progress."
+    log_error "If you're sure no other operation is running, remove: $LOCK_FILE"
+    exit 1
+fi
+
 # =============================================================================
 # Restore Databases
 # =============================================================================
 restore_databases() {
     log_info "Stopping application services..."
-    compose_cmd stop backend superset ml-service 2>/dev/null || true
+    compose_cmd stop backend superset ml-service celery-beat celery-worker-monitoring celery-worker-prediction celery-worker-training 2>/dev/null || true
+
+    if [[ "$POSTGRES_MODE" == "bundled" ]]; then
+        # Ensure PostgreSQL container is running before restore
+        log_info "Ensuring PostgreSQL is running..."
+        compose_cmd up -d postgres
+        local max_wait=30
+        local waited=0
+        while ! compose_cmd exec -T postgres pg_isready -U "$POSTGRES_USER" 2>/dev/null; do
+            sleep 1
+            waited=$((waited + 1))
+            if [[ $waited -ge $max_wait ]]; then
+                log_error "PostgreSQL did not become ready within ${max_wait}s"
+                exit 1
+            fi
+        done
+        log_success "PostgreSQL is ready"
+    fi
 
     if [[ "$POSTGRES_MODE" == "external" ]]; then
         # External PostgreSQL: use psql/pg_restore over the network
@@ -316,8 +351,30 @@ restore_volumes() {
 
     # Start containers temporarily for volume restore (exec requires running containers)
     log_info "  Starting containers for volume restore..."
-    compose_cmd up -d backend ml-service superset 2>/dev/null || true
-    sleep 5
+    compose_cmd up -d backend ml-service superset celery-beat jupyter 2>/dev/null || true
+
+    # Wait for containers to be running (not healthy, just started)
+    log_info "  Waiting for containers to start..."
+    local max_container_wait=60
+    local container_waited=0
+    local required_containers=("pravaha-backend" "pravaha-ml-service" "pravaha-superset" "pravaha-celery-beat" "pravaha-jupyter")
+    while [[ $container_waited -lt $max_container_wait ]]; do
+        local all_running=true
+        for container in "${required_containers[@]}"; do
+            if ! docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+                all_running=false
+                break
+            fi
+        done
+        if [[ "$all_running" == "true" ]]; then
+            break
+        fi
+        sleep 2
+        container_waited=$((container_waited + 2))
+    done
+    if [[ $container_waited -ge $max_container_wait ]]; then
+        log_warning "  Some containers may not be fully started; volume restore may have partial results"
+    fi
 
     if [[ -f "$BACKUP_DIR/uploads.tar.gz" ]]; then
         log_info "  Restoring uploads..."
@@ -344,8 +401,33 @@ restore_volumes() {
         compose_cmd exec -T ml-service tar xzf - -C / < "$BACKUP_DIR/training_data.tar.gz" || log_warning "Could not restore training data"
     fi
 
+    if [[ -f "$BACKUP_DIR/plugins.tar.gz" ]]; then
+        log_info "  Restoring plugins..."
+        compose_cmd exec -T backend tar xzf - -C / < "$BACKUP_DIR/plugins.tar.gz" || log_warning "Could not restore plugins"
+    fi
+
+    if [[ -f "$BACKUP_DIR/celery_beat_schedule.tar.gz" ]]; then
+        log_info "  Restoring celery beat schedule..."
+        compose_cmd exec -T celery-beat tar xzf - -C / < "$BACKUP_DIR/celery_beat_schedule.tar.gz" || log_warning "Could not restore celery beat schedule"
+    fi
+
+    if [[ -f "$BACKUP_DIR/workflow_configs.tar.gz" ]]; then
+        log_info "  Restoring workflow configs..."
+        compose_cmd exec -T backend tar xzf - -C / < "$BACKUP_DIR/workflow_configs.tar.gz" || log_warning "Could not restore workflow configs"
+    fi
+
+    if [[ -f "$BACKUP_DIR/jupyter_notebooks.tar.gz" ]]; then
+        log_info "  Restoring Jupyter notebooks..."
+        compose_cmd exec -T jupyter tar xzf - -C / < "$BACKUP_DIR/jupyter_notebooks.tar.gz" || log_warning "Could not restore Jupyter notebooks"
+    fi
+
+    if [[ -f "$BACKUP_DIR/jupyter_data.tar.gz" ]]; then
+        log_info "  Restoring Jupyter data..."
+        compose_cmd exec -T jupyter tar xzf - -C / < "$BACKUP_DIR/jupyter_data.tar.gz" || log_warning "Could not restore Jupyter data"
+    fi
+
     # Stop containers again before the final full restart
-    compose_cmd stop backend ml-service superset 2>/dev/null || true
+    compose_cmd stop backend ml-service superset celery-beat jupyter 2>/dev/null || true
 
     log_success "Volume restore completed"
 }
@@ -364,7 +446,7 @@ case $RESTORE_TYPE in
         restore_databases
         restore_config
         # Check if this is a full backup with volumes
-        if [[ -f "$BACKUP_DIR/uploads.tar.gz" ]] || [[ -f "$BACKUP_DIR/ml_models.tar.gz" ]]; then
+        if [[ -f "$BACKUP_DIR/uploads.tar.gz" ]] || [[ -f "$BACKUP_DIR/ml_models.tar.gz" ]] || [[ -f "$BACKUP_DIR/superset_home.tar.gz" ]] || [[ -f "$BACKUP_DIR/ml_storage.tar.gz" ]] || [[ -f "$BACKUP_DIR/training_data.tar.gz" ]] || [[ -f "$BACKUP_DIR/plugins.tar.gz" ]] || [[ -f "$BACKUP_DIR/celery_beat_schedule.tar.gz" ]] || [[ -f "$BACKUP_DIR/workflow_configs.tar.gz" ]] || [[ -f "$BACKUP_DIR/jupyter_notebooks.tar.gz" ]] || [[ -f "$BACKUP_DIR/jupyter_data.tar.gz" ]]; then
             restore_volumes
         fi
         ;;
@@ -374,12 +456,51 @@ esac
 log_info "Starting services (POSTGRES_MODE=$POSTGRES_MODE)..."
 compose_cmd up -d
 
-# Cleanup
-rm -rf "$TEMP_DIR"
+echo ""
+log_info "Waiting for core services to become ready..."
+max_stabilize_wait=120
+stabilize_waited=0
+core_services=("pravaha-backend" "pravaha-redis")
+if [[ "${POSTGRES_MODE:-bundled}" == "bundled" ]]; then
+    core_services+=("pravaha-postgres")
+fi
+while [[ $stabilize_waited -lt $max_stabilize_wait ]]; do
+    all_core_ready=true
+    for svc in "${core_services[@]}"; do
+        svc_status=$(docker inspect --format='{{.State.Health.Status}}' "$svc" 2>/dev/null || echo "not_found")
+        if [[ "$svc_status" != "healthy" ]]; then
+            all_core_ready=false
+            break
+        fi
+    done
+    if [[ "$all_core_ready" == "true" ]]; then
+        log_success "Core services are ready"
+        break
+    fi
+    sleep 5
+    stabilize_waited=$((stabilize_waited + 5))
+done
+if [[ $stabilize_waited -ge $max_stabilize_wait ]]; then
+    log_warning "Core services did not become healthy within ${max_stabilize_wait}s, proceeding with health check..."
+fi
+
+# Post-restore health check
+if [[ -x "$DEPLOY_DIR/scripts/health-check.sh" ]]; then
+    log_info "Running health check..."
+    if "$DEPLOY_DIR/scripts/health-check.sh" --quiet --exit-code 2>&1; then
+        log_success "All services are healthy after restore"
+    else
+        log_warning "Some services may not be healthy yet"
+        log_info "Check service status: docker compose ps"
+        log_info "View logs: docker compose logs"
+    fi
+else
+    log_info "Health check script not found, skipping post-restore verification"
+fi
 
 echo ""
 echo "=============================================="
-log_success "Restore completed successfully!"
+log_success "Restore completed!"
 echo "=============================================="
 echo ""
 echo "Verify with: docker compose ps"

@@ -100,85 +100,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 # =============================================================================
-# Create Checkpoint Function (called by update.sh)
-# =============================================================================
-create_checkpoint() {
-    local checkpoint_name="${1:-pre_update_$(date +%Y%m%d_%H%M%S)}"
-    local checkpoint_path="$CHECKPOINT_DIR/$checkpoint_name"
-
-    log_info "Creating checkpoint: $checkpoint_name"
-
-    mkdir -p "$checkpoint_path"
-
-    cd "$DEPLOY_DIR"
-
-    # Save current .env file
-    if [[ -f ".env" ]]; then
-        cp ".env" "$checkpoint_path/.env"
-    fi
-
-    # Save current docker-compose.yml
-    if [[ -f "docker-compose.yml" ]]; then
-        cp "docker-compose.yml" "$checkpoint_path/docker-compose.yml"
-    fi
-
-    # Save current image digests (exact versions running)
-    log_info "Capturing current container image digests..."
-    compose_cmd images --format json 2>/dev/null | jq -r '.[] | "\(.Repository):\(.Tag)@\(.Digest)"' \
-        > "$checkpoint_path/image_digests.txt" 2>/dev/null || {
-        # Fallback for older docker compose versions
-        compose_cmd images > "$checkpoint_path/image_versions.txt" 2>/dev/null || true
-    }
-
-    # Save current IMAGE_TAG
-    grep "^IMAGE_TAG=" ".env" > "$checkpoint_path/image_tag.txt" 2>/dev/null || echo "IMAGE_TAG=unknown" > "$checkpoint_path/image_tag.txt"
-
-    # Save NGINX configuration
-    if [[ -d "nginx" ]]; then
-        cp -r "nginx" "$checkpoint_path/"
-    fi
-
-    # Save SSL certificates metadata (not the actual certs for security)
-    if [[ -d "ssl" ]]; then
-        mkdir -p "$checkpoint_path/ssl_meta"
-        for cert in ssl/*.pem; do
-            if [[ -f "$cert" ]]; then
-                openssl x509 -in "$cert" -noout -subject -dates 2>/dev/null \
-                    > "$checkpoint_path/ssl_meta/$(basename "$cert").info" || true
-            fi
-        done
-    fi
-
-    # Create checkpoint manifest
-    cat > "$checkpoint_path/manifest.json" << EOF
-{
-    "checkpoint_name": "$checkpoint_name",
-    "created_at": "$(date -Iseconds)",
-    "image_tag": "$(grep '^IMAGE_TAG=' .env 2>/dev/null | cut -d= -f2 || echo 'unknown')",
-    "services_running": $(compose_cmd ps --format json 2>/dev/null | jq -s 'map(.Name)' 2>/dev/null || echo '[]'),
-    "postgres_version": "$( [[ "${POSTGRES_MODE:-bundled}" == "bundled" ]] && compose_cmd exec -T postgres psql --version 2>/dev/null | head -1 || echo 'unknown')",
-    "deploy_dir": "$DEPLOY_DIR"
-}
-EOF
-
-    # Update latest symlink
-    rm -f "$CHECKPOINT_DIR/latest"
-    ln -sf "$checkpoint_name" "$CHECKPOINT_DIR/latest"
-
-    # Cleanup old checkpoints (keep last 5)
-    local checkpoint_count=$(ls -1 "$CHECKPOINT_DIR" 2>/dev/null | grep -v latest | wc -l)
-    if [[ $checkpoint_count -gt 5 ]]; then
-        ls -1t "$CHECKPOINT_DIR" | grep -v latest | tail -n +6 | while read old_checkpoint; do
-            log_info "Removing old checkpoint: $old_checkpoint"
-            rm -rf "$CHECKPOINT_DIR/$old_checkpoint"
-        done
-    fi
-
-    log_success "Checkpoint created: $checkpoint_path"
-    echo "$checkpoint_name"
-}
-
-# =============================================================================
 # List Checkpoints
 # =============================================================================
 list_checkpoints() {
@@ -276,6 +197,44 @@ verify_checkpoint() {
 }
 
 # =============================================================================
+# wait_for_healthy()
+# Polls a container's health status until healthy, unhealthy, or timeout.
+# Args: $1 = container name, $2 = timeout in seconds (default 90)
+# Returns: 0 if healthy, 1 if unhealthy/timeout
+# =============================================================================
+wait_for_healthy() {
+    local container=$1
+    local timeout=${2:-90}
+    local elapsed=0
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local status
+        status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "not_found")
+
+        case $status in
+            "healthy")
+                return 0
+                ;;
+            "unhealthy")
+                return 1
+                ;;
+            "not_found")
+                # Container might exist but have no healthcheck defined
+                if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+                    return 0  # Running but no healthcheck
+                fi
+                # Container not running yet, keep waiting
+                ;;
+        esac
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    return 1  # Timeout
+}
+
+# =============================================================================
 # Health Check
 # =============================================================================
 check_health() {
@@ -284,37 +243,105 @@ check_health() {
     cd "$DEPLOY_DIR"
 
     local all_healthy=true
-    local services=("redis" "backend" "superset" "ml-service" "nginx")
+    # All 12 services (11 without bundled postgres)
+    local services=("redis" "backend" "frontend" "superset" "ml-service" "jupyter" "nginx" "celery-training" "celery-prediction" "celery-monitoring" "celery-beat")
     if [[ "${POSTGRES_MODE:-bundled}" == "bundled" ]]; then
         services=("postgres" "${services[@]}")
     fi
 
     for service in "${services[@]}"; do
         local container_name="pravaha-$service"
-        local status=$(docker inspect --format='{{.State.Health.Status}}' "$container_name" 2>/dev/null || echo "not_found")
 
-        case $status in
+        # Determine per-service timeout (seconds)
+        # ML service: 360s (start_period=300s + margin)
+        # Superset: 210s (start_period=180s + margin)
+        local svc_timeout=60
+        case "$service" in
+            postgres)    svc_timeout=120 ;;
+            backend)     svc_timeout=120 ;;
+            superset)    svc_timeout=210 ;;
+            ml-service)  svc_timeout=360 ;;
+            celery-*)    svc_timeout=90  ;;
+            *)           svc_timeout=60  ;;
+        esac
+
+        # Poll health status with timeout instead of single-shot check
+        local elapsed=0
+        local final_status="unknown"
+        while [[ $elapsed -lt $svc_timeout ]]; do
+            local status
+            status=$(docker inspect --format='{{.State.Health.Status}}' "$container_name" 2>/dev/null || echo "not_found")
+
+            case $status in
+                "healthy")
+                    final_status="healthy"
+                    break
+                    ;;
+                "unhealthy")
+                    final_status="unhealthy"
+                    break
+                    ;;
+                "not_found")
+                    # Check if container exists but has no healthcheck
+                    if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+                        final_status="running_no_healthcheck"
+                        break
+                    fi
+                    final_status="not_found"
+                    ;;
+                *)
+                    final_status="$status"
+                    ;;
+            esac
+
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+
+        case $final_status in
             "healthy")
                 log_success "  $service: healthy"
                 ;;
-            "unhealthy")
-                log_error "  $service: UNHEALTHY"
-                all_healthy=false
+            "running_no_healthcheck")
+                log_success "  $service: running (no healthcheck)"
                 ;;
-            "starting")
-                log_warning "  $service: starting (wait longer)"
+            "unhealthy")
+                case "$service" in
+                    celery-*|jupyter)
+                        log_warning "  $service: unhealthy (non-critical, will not trigger rollback failure)"
+                        ;;
+                    *)
+                        log_error "  $service: UNHEALTHY"
+                        all_healthy=false
+                        ;;
+                esac
                 ;;
             "not_found")
-                # Check if container exists but has no healthcheck
-                if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
-                    log_success "  $service: running (no healthcheck)"
-                else
-                    log_error "  $service: NOT RUNNING"
-                    all_healthy=false
-                fi
+                case "$service" in
+                    celery-*|jupyter)
+                        log_warning "  $service: not running (non-critical, will not trigger rollback failure)"
+                        ;;
+                    *)
+                        log_error "  $service: NOT RUNNING"
+                        all_healthy=false
+                        ;;
+                esac
                 ;;
             *)
-                log_warning "  $service: $status"
+                # For celery workers and jupyter, treat "running" as acceptable (non-critical)
+                case "$service" in
+                    celery-*|jupyter)
+                        if docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+                            log_warning "  $service: running (health check inconclusive)"
+                        else
+                            log_warning "  $service: not running (non-critical, will not trigger rollback failure)"
+                        fi
+                        ;;
+                    *)
+                        log_error "  $service: FAILED (timeout after ${svc_timeout}s, last status: $final_status)"
+                        all_healthy=false
+                        ;;
+                esac
                 ;;
         esac
     done
@@ -370,12 +397,31 @@ rollback() {
 
     cd "$DEPLOY_DIR"
 
+    # Set EXIT trap to ensure services are restarted if script fails unexpectedly
+    # after stopping them (e.g., SIGTERM, network error during pull, OOM kill).
+    SERVICES_STOPPED=false
+    rollback_cleanup_on_failure() {
+        local exit_code=$?
+        if [[ "$SERVICES_STOPPED" == "true" && $exit_code -ne 0 ]]; then
+            echo ""
+            log_error "Rollback script exited unexpectedly (exit code $exit_code) while services were stopped!"
+            log_warning "Attempting emergency service restart..."
+            if [[ -f "$DEPLOY_DIR/.env" ]]; then
+                set -a; source "$DEPLOY_DIR/.env" 2>/dev/null || true; set +a
+            fi
+            compose_cmd up -d 2>/dev/null || true
+            log_info "Emergency restart issued. Check service status: docker compose ps"
+        fi
+    }
+    trap rollback_cleanup_on_failure EXIT
+
     # Step 1: Stop services
     log_info "Stopping services..."
+    SERVICES_STOPPED=true
     compose_cmd down --timeout 30 || {
         log_warning "Graceful stop failed, forcing..."
-        compose_cmd kill
-        compose_cmd down
+        compose_cmd kill 2>/dev/null || true
+        compose_cmd down 2>/dev/null || true
     }
 
     # Step 2: Restore .env
@@ -385,12 +431,26 @@ rollback() {
         cp "$checkpoint_path/.env" "$DEPLOY_DIR/.env"
     fi
 
+    # Re-source environment after .env restoration to update POSTGRES_MODE
+    source_env
+
     # Step 3: Restore docker-compose.yml if changed
     if [[ -f "$checkpoint_path/docker-compose.yml" ]]; then
         log_info "Restoring docker-compose.yml..."
         cp "$DEPLOY_DIR/docker-compose.yml" "$DEPLOY_DIR/docker-compose.yml.pre-rollback" 2>/dev/null || true
         cp "$checkpoint_path/docker-compose.yml" "$DEPLOY_DIR/docker-compose.yml"
     fi
+
+    # Step 3b: Restore docker-compose override files
+    for compose_override in "$checkpoint_path"/docker-compose.*.yml; do
+        if [[ -f "$compose_override" ]]; then
+            local override_name
+            override_name=$(basename "$compose_override")
+            log_info "Restoring $override_name..."
+            cp "$DEPLOY_DIR/$override_name" "$DEPLOY_DIR/${override_name}.pre-rollback" 2>/dev/null || true
+            cp "$compose_override" "$DEPLOY_DIR/$override_name"
+        fi
+    done
 
     # Step 4: Restore NGINX configuration
     if [[ -d "$checkpoint_path/nginx" ]]; then
@@ -406,29 +466,39 @@ rollback() {
         exit 1
     }
 
-    # Step 6: Start services
-    log_info "Starting services with restored configuration..."
+    # Step 6: Start services in dependency order
+    log_info "Starting services in dependency order..."
+    if [[ "${POSTGRES_MODE:-bundled}" == "bundled" ]]; then
+        log_info "  Starting PostgreSQL (bundled mode)..."
+        compose_cmd up -d postgres
+        log_info "  Waiting for PostgreSQL to become healthy..."
+        if ! wait_for_healthy "pravaha-postgres" 120; then
+            log_error "  PostgreSQL failed to become healthy within 120s"
+            log_error "  Check logs: docker compose logs postgres"
+            exit 1
+        fi
+        log_success "  PostgreSQL is healthy"
+    fi
+    log_info "  Starting Redis..."
+    compose_cmd up -d redis
+    log_info "  Waiting for Redis to become healthy..."
+    if ! wait_for_healthy "pravaha-redis" 60; then
+        log_error "  Redis failed to become healthy within 60s"
+        log_error "  Check logs: docker compose logs redis"
+        exit 1
+    fi
+    log_success "  Redis is healthy"
+    log_info "  Starting all remaining services..."
     compose_cmd up -d
+    SERVICES_STOPPED=false  # Services are running again, disable emergency restart
 
     # Step 7: Wait for services to be healthy
-    log_info "Waiting for services to become healthy..."
-    local max_wait=120
-    local waited=0
-
-    while [[ $waited -lt $max_wait ]]; do
-        sleep 10
-        waited=$((waited + 10))
-
-        if check_health 2>/dev/null; then
-            log_success "All services are healthy!"
-            break
-        fi
-
-        log_info "Waiting for services... ($waited/${max_wait}s)"
-    done
-
-    if [[ $waited -ge $max_wait ]]; then
-        log_error "Services did not become healthy within ${max_wait}s"
+    # check_health() has per-service timeouts (ml-service=360s, superset=210s, etc.)
+    log_info "Waiting for services to become healthy (per-service timeouts apply)..."
+    if check_health; then
+        log_success "All services are healthy!"
+    else
+        log_error "Some services did not become healthy after rollback"
         log_error "Check logs with: docker compose logs"
         exit 1
     fi
@@ -483,6 +553,17 @@ auto_rollback() {
 source_env
 mkdir -p "$CHECKPOINT_DIR"
 
+# Concurrent execution guard (flock) — skip for read-only operations
+if [[ "$LIST_CHECKPOINTS" != "true" ]] && [[ "$VERIFY_ONLY" != "true" ]]; then
+    LOCK_FILE="$DEPLOY_DIR/.pravaha-update.lock"
+    exec 200>"$LOCK_FILE"
+    if ! flock -n 200; then
+        log_error "Another update or rollback operation is already in progress."
+        log_error "If you're sure no other operation is running, remove: $LOCK_FILE"
+        exit 1
+    fi
+fi
+
 if [[ "$LIST_CHECKPOINTS" == "true" ]]; then
     list_checkpoints
 elif [[ "$VERIFY_ONLY" == "true" ]]; then
@@ -490,10 +571,5 @@ elif [[ "$VERIFY_ONLY" == "true" ]]; then
 elif [[ "$AUTO_ROLLBACK" == "true" ]]; then
     auto_rollback
 else
-    # If called with "create" as first arg (from update.sh)
-    if [[ "${1:-}" == "create" ]]; then
-        create_checkpoint "${2:-}"
-    else
-        rollback
-    fi
+    rollback
 fi

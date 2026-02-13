@@ -18,6 +18,8 @@
 #
 # =============================================================================
 
+set -uo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="${DEPLOY_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
@@ -179,7 +181,12 @@ check_internal_service() {
     local url=$3
     local is_critical=${4:-false}
 
-    local response=$(docker exec "pravaha-$container" wget -q -O /dev/null -S "$url" 2>&1 | grep "HTTP/" | tail -1 | awk '{print $2}' 2>/dev/null || echo "000")
+    # Try wget first (Alpine-based images), fall back to curl (Debian/Python images)
+    local response
+    response=$(docker exec "pravaha-$container" wget -q -O /dev/null -S "$url" 2>&1 | grep "HTTP/" | tail -1 | awk '{print $2}' 2>/dev/null || echo "000")
+    if [[ "$response" == "000" ]]; then
+        response=$(docker exec "pravaha-$container" curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+    fi
 
     if [[ "$response" == "200" ]]; then
         log_check "$name endpoint" "pass" "HTTP 200" "$is_critical"
@@ -237,13 +244,19 @@ check_postgres() {
 }
 
 check_redis() {
-    local ping_result=$(docker exec pravaha-redis redis-cli ${REDIS_PASSWORD:+-a $REDIS_PASSWORD} ping 2>/dev/null || echo "FAILED")
+    # Use REDISCLI_AUTH env var instead of -a flag to avoid password exposure in process list
+    local redis_auth_env=""
+    if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+        redis_auth_env="REDISCLI_AUTH=$REDIS_PASSWORD"
+    fi
+
+    local ping_result=$(docker exec ${redis_auth_env:+-e "$redis_auth_env"} pravaha-redis redis-cli ping 2>/dev/null || echo "FAILED")
 
     if [[ "$ping_result" == "PONG" ]]; then
         log_check "Redis" "pass" "responsive" "true"
 
         # Check memory usage
-        local used_memory=$(docker exec pravaha-redis redis-cli ${REDIS_PASSWORD:+-a $REDIS_PASSWORD} INFO memory 2>/dev/null | grep "used_memory_human" | cut -d: -f2 | tr -d '[:space:]\r')
+        local used_memory=$(docker exec ${redis_auth_env:+-e "$redis_auth_env"} pravaha-redis redis-cli INFO memory 2>/dev/null | grep "used_memory_human" | cut -d: -f2 | tr -d '[:space:]\r')
         if [[ -n "$used_memory" ]]; then
             log_check "Redis memory" "pass" "$used_memory" "false"
         fi
@@ -323,7 +336,12 @@ check_ssl() {
 # =============================================================================
 check_celery_queues() {
     # Check if there are stuck tasks
-    local queue_length=$(docker exec pravaha-redis redis-cli ${REDIS_PASSWORD:+-a $REDIS_PASSWORD} LLEN celery 2>/dev/null || echo "0")
+    # Use REDISCLI_AUTH env var instead of -a flag to avoid password exposure in process list
+    local redis_auth_env=""
+    if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+        redis_auth_env="REDISCLI_AUTH=$REDIS_PASSWORD"
+    fi
+    local queue_length=$(docker exec ${redis_auth_env:+-e "$redis_auth_env"} pravaha-redis redis-cli LLEN celery 2>/dev/null || echo "0")
     queue_length=${queue_length:-0}
 
     if [[ "$queue_length" -gt 1000 ]]; then
@@ -362,6 +380,7 @@ check_container "backend" true
 check_container "frontend" false
 check_container "superset" false
 check_container "ml-service" false
+check_container "jupyter" false
 check_container "nginx" false
 check_container "celery-training" false
 check_container "celery-prediction" false
@@ -390,8 +409,9 @@ if [[ "$QUICK_MODE" != "true" ]]; then
 
     check_internal_service "Backend" "backend" "http://localhost:3000/health/live" true
     check_internal_service "Frontend" "frontend" "http://localhost:80/health" false
-    check_internal_service "Superset" "superset" "http://localhost:8088/health" false
+    check_internal_service "Superset" "superset" "http://localhost:8088/insights/health" false
     check_internal_service "ML Service" "ml-service" "http://localhost:8001/api/v1/health" false
+    check_internal_service "Jupyter" "jupyter" "http://localhost:8888/notebooks/api/status" false
 
     # Celery Workers - check container health status (they don't have HTTP endpoints)
     for worker in training prediction monitoring; do
