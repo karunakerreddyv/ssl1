@@ -487,8 +487,15 @@ fi
 # Post-restore health check
 if [[ -x "$DEPLOY_DIR/scripts/health-check.sh" ]]; then
     log_info "Running health check..."
-    if "$DEPLOY_DIR/scripts/health-check.sh" --quiet --exit-code 2>&1; then
+    local health_exit=0
+    "$DEPLOY_DIR/scripts/health-check.sh" --quiet --exit-code 2>&1 || health_exit=$?
+    if [[ $health_exit -eq 0 ]]; then
         log_success "All services are healthy after restore"
+    elif [[ $health_exit -eq 2 ]]; then
+        log_error "CRITICAL: Core services failed health check after restore"
+        log_error "Check service status: docker compose ps"
+        log_error "View logs: docker compose logs"
+        exit 2
     else
         log_warning "Some services may not be healthy yet"
         log_info "Check service status: docker compose ps"

@@ -301,7 +301,7 @@ start_services_ordered() {
 # =============================================================================
 # run_migrations()
 # Runs database migrations for backend (Prisma) and Superset.
-# 1. Backend: npm run db:migrate (Prisma migrate deploy)
+# 1. Backend: npx prisma migrate deploy (Prisma migrate deploy)
 # 2. Superset: superset db upgrade (Alembic migrations)
 # =============================================================================
 run_migrations() {
@@ -311,7 +311,7 @@ run_migrations() {
 
     # Backend Prisma migrations
     log_info "  Running backend database migrations (Prisma)..."
-    if compose_cmd exec -T backend npm run db:migrate 2>&1; then
+    if compose_cmd exec -T backend npx prisma migrate deploy 2>&1; then
         log_success "  Backend database migrations completed"
     else
         log_warning "  Backend migrations returned non-zero (may have no pending migrations)"
@@ -640,7 +640,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
     echo "      c. All remaining services (backend, frontend, superset, ml-service, etc.)"
     echo "  13. Wait for core infrastructure + run migrations:"
     echo "      a. Wait for PostgreSQL (if bundled) + backend"
-    echo "      b. Backend: compose_cmd exec -T backend npm run db:migrate"
+    echo "      b. Backend: compose_cmd exec -T backend npx prisma migrate deploy"
     echo "      c. Superset: compose_cmd exec -T superset superset db upgrade"
     echo "  14. Health checks (all services, post-migration, ${HEALTH_TIMEOUT}s timeout)"
 
@@ -1012,11 +1012,17 @@ fi
 if [[ "$ALL_HEALTHY" == "true" ]]; then
     if [[ -x "$DEPLOY_DIR/scripts/health-check.sh" ]]; then
         log_info "Running comprehensive health check..."
-        if "$DEPLOY_DIR/scripts/health-check.sh" --quiet --exit-code 2>&1; then
+        local health_exit=0
+        "$DEPLOY_DIR/scripts/health-check.sh" --quiet --exit-code 2>&1 || health_exit=$?
+        if [[ $health_exit -eq 0 ]]; then
             log_success "Comprehensive health check passed"
-        else
-            log_warning "Comprehensive health check reported issues"
+        elif [[ $health_exit -eq 2 ]]; then
+            log_error "Comprehensive health check: CRITICAL failures detected"
             ALL_HEALTHY=false
+        else
+            log_warning "Comprehensive health check: non-critical issues detected (degraded but operational)"
+            # Non-critical failures (exit 1) do NOT trigger rollback
+            # Examples: Jupyter 403, optional monitoring endpoints
         fi
     fi
 fi

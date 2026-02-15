@@ -411,7 +411,14 @@ if [[ "$QUICK_MODE" != "true" ]]; then
     check_internal_service "Frontend" "frontend" "http://localhost:80/health" false
     check_internal_service "Superset" "superset" "http://localhost:8088/insights/health" false
     check_internal_service "ML Service" "ml-service" "http://localhost:8001/api/v1/health" false
-    check_internal_service "Jupyter" "jupyter" "http://localhost:8888/notebooks/api/status" false
+    # Jupyter requires token auth — use docker exec with Authorization header
+    local jupyter_response
+    jupyter_response=$(docker exec pravaha-jupyter curl -sf -o /dev/null -w "%{http_code}" "http://localhost:8888/notebooks/api/status" -H "Authorization: token $JUPYTER_TOKEN" 2>/dev/null || echo "000")
+    if [[ "$jupyter_response" == "200" ]]; then
+        log_check "Jupyter endpoint" "pass" "HTTP 200" "false"
+    else
+        log_check "Jupyter endpoint" "fail" "HTTP $jupyter_response" "false"
+    fi
 
     # Celery Workers - check container health status (they don't have HTTP endpoints)
     for worker in training prediction monitoring; do
