@@ -152,7 +152,7 @@ services:
       # Database connection - uses POSTGRES_HOST variable for external DB support
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}${POSTGRES_SSL_ENABLED:+?sslmode=${POSTGRES_SSL_MODE:-prefer}}
       # Docker-specific overrides (container network URLs)
-      - SUPERSET_API_URL=http://superset:8088
+      - SUPERSET_API_URL=http://superset:8088/insights
       - ML_SERVICE_URL=http://ml-service:8001
       # Audit key paths (mounted files)
       - AUDIT_PRIVATE_KEY=/app/audit-private.pem
@@ -222,8 +222,12 @@ services:
       - SUPERSET_ADMIN_PASSWORD=${SUPERSET_ADMIN_PASSWORD:-admin}
       - SUPERSET_WORKERS=${SUPERSET_WORKERS:-4}
       - SUPERSET_APP_ROOT=${SUPERSET_APP_ROOT:-/insights}
+      # Branding
+      - BRAND=${BRAND:-pravaha}
+      - BRAND_NAME=${BRAND_NAME:-Pravaha}
     volumes:
       - superset_home:/app/superset_home
+      - ./branding:/app/branding:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -577,7 +581,7 @@ services:
           cpus: '0.5'
           memory: 512M
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8888/notebooks/api/status || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8888/notebooks/api/status -H 'Authorization: token '$$JUPYTER_TOKEN || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

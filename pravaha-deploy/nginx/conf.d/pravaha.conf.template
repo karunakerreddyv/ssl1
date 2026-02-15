@@ -103,6 +103,9 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $real_scheme;
         proxy_set_header Connection "";
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
     }
 
     # Pravaha Backend API — matches OUR route prefixes from v1.ts
@@ -345,7 +348,7 @@ server {
     #   - Permalink/short URL redirects (/r/)
     # Rewrite to add /insights prefix and proxy to Superset (preserves HTTP methods).
     # UPDATE THIS LIST when upgrading Superset if new FAB views are added.
-    location ~ ^/(superset|dashboard|chart|tablemodelview|tabstateview|tableschemaview|savedqueryview|savedqueryviewapi|tagview|explore|rowlevelsecurity|annotationlayer|csstemplatemodelview|csstemplateasyncmodelview|databaseview|logmodelview|datasource|csvtodatabaseview|columnartodatabaseview|exceltodatabaseview|r|alert|report|sqllab|embedded|dataset|login|logout|users|roles|dashboardasync|sliceasync|dynamic-plugins|sqlmetricinlineview|tablecolumninlineview|userinfoeditview|resetmypassword|resetpassword|lang|back|profile|user_info|theme|swagger|ping|healthcheck|groups|list_groups|registrations|register|actionlog)(/|$) {
+    location ~ ^/(superset|dashboard|chart|tablemodelview|tabstateview|tableschemaview|savedqueryview|savedqueryviewapi|tagview|explore|rowlevelsecurity|annotationlayer|csstemplatemodelview|csstemplateasyncmodelview|databaseview|logmodelview|datasource|csvtodatabaseview|columnartodatabaseview|exceltodatabaseview|r|alert|report|sqllab|embedded|dataset|users|roles|dashboardasync|sliceasync|dynamic-plugins|sqlmetricinlineview|tablecolumninlineview|userinfoeditview|resetmypassword|resetpassword|lang|back|profile|user_info|theme|swagger|ping|healthcheck|groups|list_groups|registrations|register|actionlog)(/|$) {
         # Superset 6.0 with SUPERSET_APP_ROOT=/insights requires /insights prefix
         rewrite ^(.*)$ /insights$1 break;
 
@@ -551,8 +554,8 @@ server {
         proxy_set_header Connection "";
 
         proxy_connect_timeout 60s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
+        proxy_send_timeout 660s;
+        proxy_read_timeout 660s;
     }
 
     # ==========================================================================

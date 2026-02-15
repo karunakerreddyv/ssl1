@@ -2177,7 +2177,7 @@ main() {
     # Check Jupyter (non-critical - platform works without it)
     local jupyter_healthy=false
     for i in {1..6}; do
-        if docker exec pravaha-jupyter curl -sf http://localhost:8888/notebooks/api/status 2>/dev/null; then
+        if docker exec pravaha-jupyter sh -c 'curl -sf "http://localhost:8888/api/status?token=$JUPYTER_TOKEN"' 2>/dev/null; then
             jupyter_healthy=true
             break
         fi
