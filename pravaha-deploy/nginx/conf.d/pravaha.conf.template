@@ -55,7 +55,7 @@ server {
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data:; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
     add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
 
     # ==========================================================================
@@ -291,15 +291,15 @@ server {
         proxy_cache static_cache;
         proxy_cache_valid 200 1d;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
-        add_header X-Cache-Status $upstream_cache_status;
-        add_header Cache-Control "public, max-age=86400";
+        add_header X-Cache-Status $upstream_cache_status always;
+        add_header Cache-Control "public, max-age=86400" always;
         # Repeat security headers (nginx add_header in location overrides server-level)
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data:; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
     }
 
@@ -327,15 +327,15 @@ server {
         proxy_cache static_cache;
         proxy_cache_valid 200 1d;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
-        add_header X-Cache-Status $upstream_cache_status;
-        add_header Cache-Control "public, max-age=86400";
+        add_header X-Cache-Status $upstream_cache_status always;
+        add_header Cache-Control "public, max-age=86400" always;
         # Repeat security headers (nginx add_header in location overrides server-level)
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data:; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
     }
 
@@ -348,7 +348,7 @@ server {
     #   - Permalink/short URL redirects (/r/)
     # Rewrite to add /insights prefix and proxy to Superset (preserves HTTP methods).
     # UPDATE THIS LIST when upgrading Superset if new FAB views are added.
-    location ~ ^/(superset|dashboard|chart|tablemodelview|tabstateview|tableschemaview|savedqueryview|savedqueryviewapi|tagview|explore|rowlevelsecurity|annotationlayer|csstemplatemodelview|csstemplateasyncmodelview|databaseview|logmodelview|datasource|csvtodatabaseview|columnartodatabaseview|exceltodatabaseview|r|alert|report|sqllab|embedded|dataset|users|roles|dashboardasync|sliceasync|dynamic-plugins|sqlmetricinlineview|tablecolumninlineview|userinfoeditview|resetmypassword|resetpassword|lang|back|profile|user_info|theme|swagger|ping|healthcheck|groups|list_groups|registrations|register|actionlog)(/|$) {
+    location ~ ^/(superset|dashboard|chart|tablemodelview|tabstateview|tableschemaview|savedqueryview|savedqueryviewapi|tagview|explore|rowlevelsecurity|annotationlayer|csstemplatemodelview|csstemplateasyncmodelview|databaseview|logmodelview|datasource|csvtodatabaseview|columnartodatabaseview|exceltodatabaseview|r|alert|report|sqllab|embedded|dataset|roles|dashboardasync|sliceasync|dynamic-plugins|sqlmetricinlineview|tablecolumninlineview|userinfoeditview|resetmypassword|resetpassword|lang|back|profile|user_info|theme|swagger|ping|healthcheck|groups|list_groups|registrations|register|actionlog)(/|$) {
         # Superset 6.0 with SUPERSET_APP_ROOT=/insights requires /insights prefix
         rewrite ^(.*)$ /insights$1 break;
 
@@ -471,10 +471,12 @@ server {
     # Jupyter Notebook Server
     # Access notebooks at /notebooks/ - starts automatically as a core service
     # Uses dynamic resolution - nginx starts even if Jupyter isn't running
+    # Jupyter is configured with --ServerApp.base_url=/notebooks/ so it
+    # expects to receive the full /notebooks/... URI (no trailing / on proxy_pass)
     # ==========================================================================
     location /notebooks/ {
         set $jupyter_upstream jupyter:8888;
-        proxy_pass http://$jupyter_upstream/;
+        proxy_pass http://$jupyter_upstream;
         proxy_http_version 1.1;
 
         proxy_set_header Host $host;
@@ -483,55 +485,16 @@ server {
         proxy_set_header X-Forwarded-Proto $real_scheme;
         proxy_set_header X-Forwarded-Host $host;
 
-        # WebSocket support for Jupyter kernels
+        # WebSocket support for Jupyter kernels and terminals
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
 
-        # Long-running notebook connections
+        # Long-running notebook/kernel connections
         proxy_connect_timeout 7d;
         proxy_send_timeout 7d;
         proxy_read_timeout 7d;
 
         # Disable buffering for real-time output
-        proxy_buffering off;
-    }
-
-    # Jupyter WebSocket endpoint for kernel communication
-    location /notebooks/api/kernels/ {
-        set $jupyter_upstream jupyter:8888;
-        proxy_pass http://$jupyter_upstream/api/kernels/;
-        proxy_http_version 1.1;
-
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $real_scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-
-        # Long-running WebSocket connections for kernel execution
-        proxy_connect_timeout 7d;
-        proxy_send_timeout 7d;
-        proxy_read_timeout 7d;
-        proxy_buffering off;
-    }
-
-    # Jupyter terminals WebSocket endpoint
-    location /notebooks/terminals/ {
-        set $jupyter_upstream jupyter:8888;
-        proxy_pass http://$jupyter_upstream/terminals/;
-        proxy_http_version 1.1;
-
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $real_scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-
-        proxy_connect_timeout 7d;
-        proxy_send_timeout 7d;
-        proxy_read_timeout 7d;
         proxy_buffering off;
     }
 
@@ -573,14 +536,14 @@ server {
         proxy_set_header Connection "";
 
         # Don't cache HTML for SPA
-        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
         # Repeat security headers (nginx add_header in location overrides server-level)
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data:; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
     }
 
@@ -592,14 +555,14 @@ server {
         proxy_set_header Connection "";
 
         # Long cache for hashed assets
-        add_header Cache-Control "public, max-age=31536000, immutable";
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
         # Repeat security headers (nginx add_header in location overrides server-level)
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data:; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
     }
 
@@ -615,14 +578,14 @@ server {
         access_log off;
         log_not_found off;
         expires 1y;
-        add_header Cache-Control "public, immutable";
+        add_header Cache-Control "public, immutable" always;
         # Repeat security headers (nginx add_header in location overrides server-level)
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data:; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' wss: ws:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
     }
 

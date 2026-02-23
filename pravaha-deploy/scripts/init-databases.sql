@@ -27,3 +27,13 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- Create extensions for superset database (name must match SUPERSET_DB in .env)
 \c superset
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Create Analytics database if it doesn't exist
+-- Holds use case source/output data (seed_data schema), separate from platform metadata
+SELECT 'CREATE DATABASE analytics_db'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'analytics_db')\gexec
+
+-- Create extensions for analytics database
+\c analytics_db
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";

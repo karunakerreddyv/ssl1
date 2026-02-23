@@ -2,6 +2,8 @@
 
 Deploy the complete Pravaha platform on a single server.
 
+> **For forks:** Replace `ghcr.io/talentfino/pravaha` with `ghcr.io/<your-org>/pravaha` in `.env`.
+
 ## Container Registry Configuration
 
 ### Default Registry: GitHub Container Registry (GHCR)
@@ -13,7 +15,7 @@ Images are pulled from GHCR (`ghcr.io/talentfino/pravaha`) by default.
 - `ghcr.io/talentfino/pravaha/superset:latest`
 - `ghcr.io/talentfino/pravaha/ml-service:latest`
 
-Docker Hub is also supported as an alternative registry (set `REGISTRY=karunakervgrc` and `IMAGE_PREFIX=pravaha-` in .env).
+Docker Hub is also supported as an alternative registry (set `REGISTRY=<dockerhub-user>` and `IMAGE_PREFIX=pravaha-` in `.env`).
 
 ### Architecture Support
 Images are multi-architecture (linux/amd64 + linux/arm64).

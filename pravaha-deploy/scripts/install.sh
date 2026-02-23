@@ -1062,12 +1062,18 @@ EOF
 authenticate_registry() {
     local deploy_dir=$1
     local registry=""
+    local image_prefix=""
 
     # Source .env to get registry configuration
     if [[ -f "$deploy_dir/.env" ]]; then
         registry=$(grep "^REGISTRY=" "$deploy_dir/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
     fi
     registry="${registry:-ghcr.io/talentfino/pravaha}"
+
+    # Read image prefix from .env
+    if [[ -f "$deploy_dir/.env" ]]; then
+        image_prefix=$(grep "^IMAGE_PREFIX=" "$deploy_dir/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+    fi
 
     log_info "Authenticating with container registry: $registry"
 
@@ -1085,7 +1091,7 @@ authenticate_registry() {
         fi
 
         # Check if already logged in by attempting a test pull
-        if docker pull ghcr.io/talentfino/pravaha/frontend:latest --quiet 2>/dev/null; then
+        if docker pull "${registry}/${image_prefix}frontend:latest" --quiet 2>/dev/null; then
             log_info "Already authenticated to GHCR (or images are public)"
             return 0
         fi
@@ -1172,7 +1178,7 @@ pull_images() {
         log_error ""
         log_error "Troubleshooting steps:"
         log_error "  1. Check network connectivity: curl -s https://ghcr.io/v2/"
-        log_error "  2. Verify registry access: docker pull ghcr.io/talentfino/pravaha/frontend:latest"
+        log_error "  2. Verify registry access: docker pull ${registry}/${image_prefix}frontend:latest"
         log_error "  3. GHCR requires authentication for private images"
         log_error "  4. Set credentials before running install.sh:"
         log_error "     export GHCR_USERNAME=your-github-username"

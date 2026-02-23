@@ -487,7 +487,7 @@ fi
 # Post-restore health check
 if [[ -x "$DEPLOY_DIR/scripts/health-check.sh" ]]; then
     log_info "Running health check..."
-    local health_exit=0
+    health_exit=0
     "$DEPLOY_DIR/scripts/health-check.sh" --quiet --exit-code 2>&1 || health_exit=$?
     if [[ $health_exit -eq 0 ]]; then
         log_success "All services are healthy after restore"
