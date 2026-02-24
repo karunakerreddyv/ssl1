@@ -12,7 +12,6 @@ positions:
 
 clients:
   - url: http://loki:3100/loki/api/v1/push
-    tenant_id: pravaha
     batchwait: 1s
     batchsize: 1048576  # 1MB
     timeout: 10s

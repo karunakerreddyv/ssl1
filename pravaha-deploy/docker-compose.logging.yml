@@ -122,6 +122,7 @@ services:
       - GF_EXPLORE_ENABLED=true
       - GF_ALERTING_ENABLED=false
       - GF_UNIFIED_ALERTING_ENABLED=false
+      - GF_NEWS_NEWS_FEED_ENABLED=false
     volumes:
       - grafana_logs_data:/var/lib/grafana
       - ./logging/grafana/provisioning:/etc/grafana/provisioning:ro
