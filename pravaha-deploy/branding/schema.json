@@ -1,0 +1,187 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BrandConfig",
+  "description": "Brand configuration schema for platform white-labeling",
+  "type": "object",
+  "required": [
+    "name",
+    "tagline",
+    "companyName",
+    "companyUrl",
+    "supportEmail",
+    "supportUrl",
+    "copyrightHolder",
+    "description",
+    "colors",
+    "features",
+    "legal",
+    "emails",
+    "docker",
+    "documentation",
+    "system"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Platform display name"
+    },
+    "tagline": {
+      "type": "string",
+      "description": "Short tagline for the platform"
+    },
+    "companyName": {
+      "type": "string",
+      "description": "Company name for copyright and legal references"
+    },
+    "companyUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Company website URL"
+    },
+    "supportEmail": {
+      "type": "string",
+      "format": "email",
+      "description": "Support email address"
+    },
+    "supportUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Support portal URL"
+    },
+    "copyrightHolder": {
+      "type": "string",
+      "description": "Copyright holder name"
+    },
+    "description": {
+      "type": "string",
+      "description": "Platform description"
+    },
+    "colors": {
+      "type": "object",
+      "required": ["primary", "secondary"],
+      "properties": {
+        "primary": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "description": "Primary brand color (hex)"
+        },
+        "secondary": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "description": "Secondary brand color (hex)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "features": {
+      "type": "object",
+      "required": ["showLandingPage", "showPublicRegistration"],
+      "properties": {
+        "showLandingPage": {
+          "type": "boolean",
+          "description": "Whether to show the public landing page"
+        },
+        "showPublicRegistration": {
+          "type": "boolean",
+          "description": "Whether to allow public user registration"
+        }
+      },
+      "additionalProperties": false
+    },
+    "legal": {
+      "type": "object",
+      "required": ["privacyEmail", "legalEmail", "dpoEmail"],
+      "properties": {
+        "privacyEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Privacy-related contact email"
+        },
+        "legalEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Legal-related contact email"
+        },
+        "dpoEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Data Protection Officer contact email"
+        }
+      },
+      "additionalProperties": false
+    },
+    "emails": {
+      "type": "object",
+      "required": ["fromName", "fromAddress"],
+      "properties": {
+        "fromName": {
+          "type": "string",
+          "description": "Email sender display name"
+        },
+        "fromAddress": {
+          "type": "string",
+          "format": "email",
+          "description": "Email sender address"
+        }
+      },
+      "additionalProperties": false
+    },
+    "docker": {
+      "type": "object",
+      "required": ["prefix", "registry"],
+      "properties": {
+        "prefix": {
+          "type": "string",
+          "description": "Docker infrastructure prefix (always 'pravaha' — informational only, not used for container naming)"
+        },
+        "registry": {
+          "type": "string",
+          "description": "Docker registry organization"
+        }
+      },
+      "additionalProperties": false
+    },
+    "documentation": {
+      "type": "object",
+      "required": ["docsUrl"],
+      "properties": {
+        "docsUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Documentation website URL"
+        },
+        "runbookUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Runbook documentation URL"
+        }
+      },
+      "additionalProperties": false
+    },
+    "system": {
+      "type": "object",
+      "required": ["systemEmail", "metricsPrefix", "jwtIssuer", "jwtAudience"],
+      "properties": {
+        "systemEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "System-generated email sender address"
+        },
+        "metricsPrefix": {
+          "type": "string",
+          "description": "Prefix for Prometheus metrics"
+        },
+        "jwtIssuer": {
+          "type": "string",
+          "description": "JWT token issuer identifier"
+        },
+        "jwtAudience": {
+          "type": "string",
+          "description": "JWT token audience identifier"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
