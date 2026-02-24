@@ -109,14 +109,12 @@ scrape_configs:
                 source: output
                 template: '{{ if .message }}{{ .message }}{{ else if .msg }}{{ .msg }}{{ else }}{{ .Entry }}{{ end }}'
 
-            # Add structured fields as labels
+            # Add low-cardinality structured fields as labels
+            # NOTE: High-cardinality fields (requestId, userId, tenantId, path, task_id)
+            # are intentionally NOT added as labels to prevent stream explosion.
+            # They remain searchable in log content via LogQL: {service="backend"} |= "requestId"
             - labels:
-                requestId:
-                userId:
-                tenantId:
                 method:
-                path:
-                task_id:
                 task_name:
                 worker:
                 queue:
@@ -136,12 +134,11 @@ scrape_configs:
             - template:
                 source: output
                 template: '{{ .message }}'
-            # Extract task information from Celery task logs
+            # Extract task name from Celery task logs (task_id omitted — high cardinality)
             - regex:
                 expression: 'Task (?P<task_name>[\w.]+)\[(?P<task_id>[^\]]+)\]'
             - labels:
                 task_name:
-                task_id:
 
       # =======================================================================
       # NGINX Log Parsing
@@ -151,9 +148,9 @@ scrape_configs:
           stages:
             - regex:
                 expression: '^(?P<remote_addr>[\d.]+) - (?P<remote_user>\S+) \[(?P<time_local>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+) (?P<protocol>\S+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)"'
+            # Only low-cardinality fields as labels (path is too high-cardinality)
             - labels:
                 method:
-                path:
                 status:
             - template:
                 source: level

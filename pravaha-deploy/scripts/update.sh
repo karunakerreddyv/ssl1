@@ -171,8 +171,9 @@ source_env() {
 
     POSTGRES_MODE="${POSTGRES_MODE:-bundled}"
     DOMAIN="${DOMAIN:-localhost}"
+    ENABLE_LOGGING="${ENABLE_LOGGING:-false}"
 
-    log_info "Environment loaded: POSTGRES_MODE=$POSTGRES_MODE, DOMAIN=$DOMAIN"
+    log_info "Environment loaded: POSTGRES_MODE=$POSTGRES_MODE, DOMAIN=$DOMAIN, ENABLE_LOGGING=$ENABLE_LOGGING"
 }
 
 # =============================================================================
@@ -181,11 +182,14 @@ source_env() {
 # POSTGRES_MODE=bundled. Ensures all compose calls respect the profile.
 # =============================================================================
 compose_cmd() {
-    if [[ "${POSTGRES_MODE:-bundled}" == "bundled" ]]; then
-        docker compose --profile bundled-db "$@"
-    else
-        docker compose "$@"
+    local compose_flags=()
+    if [[ "${ENABLE_LOGGING:-false}" == "true" ]]; then
+        compose_flags+=("-f" "docker-compose.yml" "-f" "docker-compose.logging.yml")
     fi
+    if [[ "${POSTGRES_MODE:-bundled}" == "bundled" ]]; then
+        compose_flags+=("--profile" "bundled-db")
+    fi
+    docker compose "${compose_flags[@]}" "$@"
 }
 
 # =============================================================================
@@ -217,6 +221,13 @@ get_service_list() {
     services+=("pravaha-celery-prediction")
     services+=("pravaha-celery-monitoring")
     services+=("pravaha-celery-beat")
+
+    # Logging services (optional)
+    if [[ "${ENABLE_LOGGING:-false}" == "true" ]]; then
+        services+=("pravaha-loki")
+        services+=("pravaha-promtail")
+        services+=("pravaha-grafana-logs")
+    fi
 
     echo "${services[@]}"
 }
@@ -980,6 +991,7 @@ else
                 *ml-service*) svc_timeout=360 ;;
                 *celery*)     svc_timeout=90  ;;
                 *redis*)      svc_timeout=60  ;;
+                *loki*|*promtail*|*grafana*) svc_timeout=60  ;;
                 *)            svc_timeout=60  ;;
             esac
 
@@ -989,7 +1001,7 @@ else
             else
                 # For non-critical services (celery, jupyter), check if process is at least running
                 case "$service" in
-                    *celery*|*jupyter*)
+                    *celery*|*jupyter*|*loki*|*promtail*|*grafana-logs*)
                         if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
                             log_warning "  $service is running (health check inconclusive)"
                         else
@@ -1124,7 +1136,7 @@ else
             for service in "${ROLLBACK_SERVICES[@]}"; do
                 if ! wait_for_healthy "$service" 60; then
                     case "$service" in
-                        *celery*|*jupyter*)
+                        *celery*|*jupyter*|*loki*|*promtail*|*grafana-logs*)
                             if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
                                 log_warning "  $service is running after rollback"
                             else

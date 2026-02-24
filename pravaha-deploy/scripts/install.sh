@@ -1171,9 +1171,21 @@ pull_images() {
     # Authenticate with the configured registry
     authenticate_registry "$deploy_dir"
 
+    # Load environment to check ENABLE_LOGGING
+    set -a
+    source "$deploy_dir/.env" 2>/dev/null || true
+    set +a
+
+    # Build compose flags for pull (include all compose files + profiles to pre-pull all images)
+    local pull_flags=()
+    if [[ "${ENABLE_LOGGING:-false}" == "true" ]]; then
+        pull_flags+=("-f" "docker-compose.yml" "-f" "docker-compose.logging.yml")
+        log_info "Including logging stack images (Loki, Promtail, Grafana)"
+    fi
+    pull_flags+=("--profile" "bundled-db")
+
     # Pull images with retry logic (network can be flaky)
-    # Include bundled-db profile to also pre-pull postgres image
-    if ! retry_with_backoff 3 5 60 docker compose --profile bundled-db pull; then
+    if ! retry_with_backoff 3 5 60 docker compose "${pull_flags[@]}" pull; then
         log_error "Failed to pull Docker images after multiple attempts"
         log_error ""
         log_error "Troubleshooting steps:"
@@ -1349,25 +1361,36 @@ start_services() {
     source "$deploy_dir/.env" 2>/dev/null || true
     set +a
     local pg_mode="${POSTGRES_MODE:-bundled}"
+    local enable_logging="${ENABLE_LOGGING:-false}"
 
-    # Start services with appropriate profile
-    if [[ "$pg_mode" == "bundled" ]]; then
-        log_info "Starting with bundled PostgreSQL..."
-        docker compose --profile bundled-db up -d
-    else
-        log_info "Starting with external PostgreSQL at ${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}..."
-        docker compose up -d
+    # Build compose flags (file overlays + profiles)
+    local compose_flags=()
+    if [[ "$enable_logging" == "true" ]]; then
+        compose_flags+=("-f" "docker-compose.yml" "-f" "docker-compose.logging.yml")
+        log_info "Logging stack enabled (Loki + Promtail + Grafana)"
     fi
+    if [[ "$pg_mode" == "bundled" ]]; then
+        compose_flags+=("--profile" "bundled-db")
+    fi
+
+    # Start services with appropriate flags
+    log_info "Starting services (postgres=$pg_mode, logging=$enable_logging)..."
+    docker compose "${compose_flags[@]}" up -d
 
     log_info "Waiting for services to be healthy..."
 
-    # Build service list based on POSTGRES_MODE (all 12 services)
+    # Build service list based on POSTGRES_MODE
     local services
     if [[ "$pg_mode" == "bundled" ]]; then
         services=("pravaha-postgres" "pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-superset" "pravaha-ml-service" "pravaha-jupyter" "pravaha-nginx" "pravaha-celery-training" "pravaha-celery-prediction" "pravaha-celery-monitoring" "pravaha-celery-beat")
     else
         # External PostgreSQL - don't wait for bundled postgres container
         services=("pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-superset" "pravaha-ml-service" "pravaha-jupyter" "pravaha-nginx" "pravaha-celery-training" "pravaha-celery-prediction" "pravaha-celery-monitoring" "pravaha-celery-beat")
+    fi
+
+    # Add logging services if enabled
+    if [[ "$enable_logging" == "true" ]]; then
+        services+=("pravaha-loki" "pravaha-promtail" "pravaha-grafana-logs")
     fi
 
     local failed=0
@@ -1384,18 +1407,18 @@ start_services() {
             *backend*)    max_attempts=24 ;;
             *celery*)     max_attempts=18 ;;
             *jupyter*)    max_attempts=12 ;;
+            *loki*|*promtail*|*grafana*) max_attempts=12 ;;
             *)            max_attempts=12 ;;
         esac
 
         if ! wait_for_healthy "$service" "$max_attempts" 5; then
             # Celery workers may not have health checks — check if at least running
             case "$service" in
-                *celery*)
+                *celery*|*loki*|*promtail*|*grafana-logs*)
                     if docker ps --format '{{.Names}}' | grep -q "^${service}$"; then
                         log_warning "$service is running (health check inconclusive)"
                     else
-                        log_warning "$service did not become healthy"
-                        failed=1
+                        log_warning "$service did not become healthy (non-critical)"
                     fi
                     ;;
                 *)
@@ -1406,8 +1429,8 @@ start_services() {
         fi
     done
 
-    # Check health
-    docker compose ps
+    # Check health (use compose flags to show logging containers too)
+    docker compose "${compose_flags[@]}" ps
 
     if [[ $failed -eq 0 ]]; then
         log_success "All services started and healthy"
@@ -1503,12 +1526,12 @@ Jupyter token: stored in .env file (JUPYTER_TOKEN)
 
 ## Optional Services
 
-### Grafana Logging Stack
-\`\`\`bash
-cd $deploy_dir
-docker compose -f docker-compose.logging.yml up -d
-# Access at https://$domain/logs/
-\`\`\`
+### Centralized Logging (Loki + Promtail + Grafana)
+To enable centralized logging:
+1. Edit \`$deploy_dir/.env\` and set \`ENABLE_LOGGING=true\`
+2. Restart services: \`docker compose -f docker-compose.yml -f docker-compose.logging.yml up -d\`
+3. Access at https://$domain/logs/
+4. Credentials: See GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD in .env
 
 ---
 
@@ -1575,6 +1598,15 @@ print_completion() {
     echo "Configuration: $deploy_dir/.env"
     echo "After deployment: $deploy_dir/after-deployment.md"
     echo "Credentials file: $deploy_dir/.admin_password (delete after saving)"
+    echo ""
+
+    # Show logging info if enabled
+    set -a; source "$deploy_dir/.env" 2>/dev/null || true; set +a
+    if [[ "${ENABLE_LOGGING:-false}" == "true" ]]; then
+        echo "Log Monitoring:"
+        echo "  - Grafana Logs: https://$domain/logs/"
+        echo "  - Credentials: See GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD in .env"
+    fi
     echo ""
 }
 

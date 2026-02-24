@@ -26,7 +26,12 @@ server {
 
     # Redirect direct HTTP access to HTTPS (skip if behind LB with SSL termination)
     # The $should_redirect_https map is defined in nginx.conf
-    if ($should_redirect_https) {
+    # Use flag variable to bypass redirect for health check endpoints (Docker HEALTHCHECK)
+    set $do_redirect $should_redirect_https;
+    if ($request_uri = /health) {
+        set $do_redirect 0;
+    }
+    if ($do_redirect) {
         return 301 https://$server_name$request_uri;
     }
 
@@ -381,11 +386,13 @@ server {
     # Grafana - Log Viewer (Enterprise Logging)
     # Access logs at /logs/ - requires logging stack to be enabled
     # Uses dynamic resolution - nginx starts even if Grafana isn't running
-    # Service name: grafana-logs (from docker-compose.logging.yml)
+    # Service name: grafana-logs (docker-compose.yml logging profile or docker-compose.logging.yml overlay)
     # ==========================================================================
     location /logs/ {
         set $grafana_upstream grafana-logs:3000;
-        proxy_pass http://$grafana_upstream/;
+        # Pass original URI as-is (no trailing /) so Grafana receives /logs/...
+        # Required because serve_from_sub_path=true mounts all routes under /logs/
+        proxy_pass http://$grafana_upstream;
         proxy_http_version 1.1;
 
         proxy_set_header Host $host;
@@ -409,7 +416,8 @@ server {
     # Grafana API and live endpoints
     location /logs/api/ {
         set $grafana_upstream grafana-logs:3000;
-        proxy_pass http://$grafana_upstream/api/;
+        # Pass original URI as-is so Grafana receives /logs/api/...
+        proxy_pass http://$grafana_upstream;
         proxy_http_version 1.1;
 
         proxy_set_header Host $host;
