@@ -1,0 +1,150 @@
+# =============================================================================
+# PostgreSQL Configuration Template
+# Pravaha Platform - Two-Server Deployment
+# =============================================================================
+#
+# This template contains recommended settings for Pravaha platform.
+# Add or modify these settings in your postgresql.conf file.
+#
+# Location: /etc/postgresql/17/main/postgresql.conf
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CONNECTION SETTINGS
+# -----------------------------------------------------------------------------
+
+# Listen on all interfaces (required for remote connections)
+listen_addresses = '*'
+
+# Default port
+port = 5432
+
+# Maximum simultaneous connections
+# Adjust based on: app server connections + Superset + Celery workers + buffer
+max_connections = 200
+
+# -----------------------------------------------------------------------------
+# MEMORY SETTINGS
+# -----------------------------------------------------------------------------
+
+# Shared memory for caching (typically 25% of RAM, max 8GB on most systems)
+# For 16GB RAM server: use 4GB
+# For 32GB RAM server: use 8GB
+shared_buffers = 256MB
+
+# Memory for maintenance operations (VACUUM, CREATE INDEX)
+maintenance_work_mem = 256MB
+
+# Memory per query operation
+work_mem = 16MB
+
+# Estimate of memory available for disk caching (typically 75% of RAM)
+# For 16GB RAM server: use 12GB
+# For 32GB RAM server: use 24GB
+effective_cache_size = 1GB
+
+# -----------------------------------------------------------------------------
+# WRITE AHEAD LOG (WAL) SETTINGS
+# -----------------------------------------------------------------------------
+
+# WAL buffer size
+wal_buffers = 16MB
+
+# Checkpoint completion target (0-1, higher = less I/O spikes)
+checkpoint_completion_target = 0.9
+
+# Minimum WAL size before checkpoint
+min_wal_size = 1GB
+
+# Maximum WAL size before forced checkpoint
+max_wal_size = 4GB
+
+# -----------------------------------------------------------------------------
+# QUERY PLANNER SETTINGS
+# -----------------------------------------------------------------------------
+
+# Cost for random page access (lower for SSD, default 4.0 for HDD)
+random_page_cost = 1.1
+
+# Number of concurrent I/O operations (higher for SSD)
+effective_io_concurrency = 200
+
+# Statistics target for query planning
+default_statistics_target = 100
+
+# -----------------------------------------------------------------------------
+# LOGGING SETTINGS
+# -----------------------------------------------------------------------------
+
+# Minimum duration (ms) to log slow queries (0 = disabled, 1000 = 1 second)
+log_min_duration_statement = 1000
+
+# Log format
+log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+
+# Log checkpoints
+log_checkpoints = on
+
+# Log connections
+log_connections = on
+
+# Log disconnections
+log_disconnections = on
+
+# Log lock waits
+log_lock_waits = on
+
+# Log temporary file usage (0 = log all temp files)
+log_temp_files = 0
+
+# -----------------------------------------------------------------------------
+# SSL SETTINGS (if SSL is enabled)
+# -----------------------------------------------------------------------------
+
+# Enable SSL
+# ssl = on
+
+# SSL certificate files (set by setup-ssl.sh)
+# ssl_cert_file = '/etc/postgresql/17/main/ssl/server.crt'
+# ssl_key_file = '/etc/postgresql/17/main/ssl/server.key'
+# ssl_ca_file = '/etc/postgresql/17/main/ssl/ca.crt'
+
+# Allowed cipher suites
+# ssl_ciphers = 'HIGH:MEDIUM:+3DES:!aNULL'
+
+# Prefer server cipher order
+# ssl_prefer_server_ciphers = on
+
+# Minimum SSL/TLS version
+# ssl_min_protocol_version = 'TLSv1.2'
+
+# -----------------------------------------------------------------------------
+# TIMEZONE
+# -----------------------------------------------------------------------------
+
+# Set timezone to UTC for consistency
+timezone = 'UTC'
+
+# -----------------------------------------------------------------------------
+# LOCALE SETTINGS
+# -----------------------------------------------------------------------------
+
+# Default text search configuration
+default_text_search_config = 'pg_catalog.english'
+
+# =============================================================================
+# NOTES:
+# =============================================================================
+#
+# After modifying this file, restart PostgreSQL:
+#   sudo systemctl restart postgresql
+#
+# View current settings:
+#   sudo -u postgres psql -c "SHOW shared_buffers;"
+#   sudo -u postgres psql -c "SHOW max_connections;"
+#
+# View all non-default settings:
+#   sudo -u postgres psql -c "SELECT name, setting FROM pg_settings WHERE source != 'default';"
+#
+# =============================================================================

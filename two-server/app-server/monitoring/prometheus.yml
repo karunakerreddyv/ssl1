@@ -1,0 +1,214 @@
+# =============================================================================
+# Prometheus Configuration - Two-Server App Deployment
+# =============================================================================
+#
+# Scrape Configuration:
+#   - Backend (Node.js): port 3000 at /metrics
+#   - ML Service (FastAPI): port 8001 at /api/v1/metrics
+#   - Redis Exporter: port 9121 at /metrics (local Redis on app-server)
+#   - Node Exporter: port 9100 at /metrics (app-server system metrics)
+#   - PostgreSQL Exporter: port 9187 at /metrics (external database server)
+#
+# Alert Rules:
+#   - Loaded from /etc/prometheus/alerts/*.yml
+#
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+  # Attach these labels to any time series or alerts
+  external_labels:
+    cluster: 'pravaha-two-server'
+    environment: 'production'
+    deployment: 'app-server'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+      timeout: 10s
+      api_version: v2
+
+# Rule files for alerting and recording rules
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+# Scrape configurations
+scrape_configs:
+  # ===========================================================================
+  # Prometheus Self-Monitoring
+  # ===========================================================================
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          component: 'monitoring'
+
+  # ===========================================================================
+  # Alertmanager Metrics
+  # ===========================================================================
+  - job_name: 'alertmanager'
+    static_configs:
+      - targets: ['alertmanager:9093']
+        labels:
+          service: 'alertmanager'
+          component: 'monitoring'
+
+  # ===========================================================================
+  # Backend Service (Node.js/Express)
+  # Exposes metrics at /metrics endpoint
+  # ===========================================================================
+  - job_name: 'backend'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['backend:3000']
+        labels:
+          service: 'backend'
+          component: 'application'
+          language: 'nodejs'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+):\d+'
+        replacement: '${1}'
+
+  # ===========================================================================
+  # ML Service (Python/FastAPI)
+  # Exposes metrics at /api/v1/metrics endpoint
+  # ===========================================================================
+  - job_name: 'ml-service'
+    metrics_path: /api/v1/metrics
+    scrape_timeout: 15s
+    static_configs:
+      - targets: ['ml-service:8001']
+        labels:
+          service: 'ml-service'
+          component: 'application'
+          language: 'python'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+):\d+'
+        replacement: '${1}'
+
+  # ===========================================================================
+  # Superset (BI Platform)
+  # Apache Superset does not expose Prometheus metrics natively.
+  # To monitor Superset, enable StatsD in superset_config.py and deploy
+  # a statsd-exporter sidecar. The /health endpoint returns plain "OK".
+  # ===========================================================================
+  # - job_name: 'superset'
+  #   static_configs:
+  #     - targets: ['statsd-exporter:9102']
+  #   metrics_path: /metrics
+  #   scrape_interval: 30s
+
+  # ===========================================================================
+  # Redis Exporter (Local Redis on App Server)
+  # Scrapes Redis metrics via redis_exporter container
+  # ===========================================================================
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+          component: 'cache'
+          location: 'local'
+    metric_relabel_configs:
+      # Drop high-cardinality metrics if needed
+      - source_labels: [__name__]
+        regex: 'redis_commands_duration_seconds_bucket'
+        action: drop
+
+  # ===========================================================================
+  # Node Exporter (App Server System Metrics)
+  # Exposes hardware and OS-level metrics
+  # ===========================================================================
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: 'node-exporter'
+          component: 'system'
+          server: 'app-server'
+    metric_relabel_configs:
+      # Keep only essential filesystem metrics
+      - source_labels: [__name__, fstype]
+        regex: 'node_filesystem_.+;(tmpfs|devtmpfs|overlay)'
+        action: drop
+      # Drop rarely used network metrics
+      - source_labels: [__name__]
+        regex: 'node_network_transmit_queue_length|node_network_receive_errs_total|node_network_transmit_errs_total'
+        action: drop
+
+  # ===========================================================================
+  # PostgreSQL Exporter (External Database Server)
+  # Connects to external PostgreSQL via postgres-exporter container
+  # ===========================================================================
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: 'postgres'
+          component: 'database'
+          location: 'external'
+          server: 'db-server'
+    metric_relabel_configs:
+      # Rename database label for consistency
+      - source_labels: [datname]
+        target_label: database
+      # Drop template databases metrics
+      - source_labels: [datname]
+        regex: 'template[01]'
+        action: drop
+
+  # ===========================================================================
+  # Celery Workers (via ML Service Flower or direct metrics)
+  # Optional: Enable if Flower is deployed for Celery monitoring
+  # ===========================================================================
+  # - job_name: 'celery-flower'
+  #   static_configs:
+  #     - targets: ['flower:5555']
+  #       labels:
+  #         service: 'celery'
+  #         component: 'task-queue'
+
+  # ===========================================================================
+  # NGINX (if nginx-prometheus-exporter is deployed)
+  # Optional: Uncomment if using nginx_exporter
+  # ===========================================================================
+  # - job_name: 'nginx'
+  #   static_configs:
+  #     - targets: ['nginx-exporter:9113']
+  #       labels:
+  #         service: 'nginx'
+  #         component: 'proxy'
+
+# =============================================================================
+# Remote Write Configuration (Optional)
+# Enable to forward metrics to remote storage (Cortex, Thanos, Mimir, etc.)
+# =============================================================================
+# remote_write:
+#   - url: "http://cortex:9009/api/v1/push"
+#     queue_config:
+#       max_samples_per_send: 1000
+#       batch_send_deadline: 5s
+#       capacity: 5000
+#     write_relabel_configs:
+#       - source_labels: [__name__]
+#         regex: 'go_.*'
+#         action: drop
+
+# =============================================================================
+# Remote Read Configuration (Optional)
+# Enable to query from remote storage
+# =============================================================================
+# remote_read:
+#   - url: "http://cortex:9009/api/v1/read"
+#     read_recent: true

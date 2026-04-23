@@ -1,0 +1,75 @@
+# =============================================================================
+# Pravaha Platform - Database Server Logging Stack
+# Promtail Agent for PostgreSQL Log Collection (Two-Server Deployment)
+# =============================================================================
+#
+# This deployment runs a lightweight Promtail agent that collects PostgreSQL
+# logs from the host system and sends them to the App Server's Loki instance.
+#
+# Prerequisites:
+#   - App Server's Loki must be accessible on port 3100
+#   - PostgreSQL logs must be stored in /var/log/postgresql/
+#   - Set APP_SERVER_IP in your .env file
+#
+# Usage:
+#   # Set environment
+#   export APP_SERVER_IP=192.168.1.10
+#
+#   # Start the logging agent
+#   docker compose -f docker-compose.logging.yml up -d
+#
+# Log Sources:
+#   - PostgreSQL server logs (/var/log/postgresql/*.log)
+#   - PostgreSQL slow query log (if configured)
+#   - System logs related to PostgreSQL
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Promtail - Log Collector Agent
+  # Collects PostgreSQL logs and sends to App Server's Loki
+  # ===========================================================================
+  promtail:
+    image: grafana/promtail:2.9.3
+    container_name: pravaha-db-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./logging/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      # PostgreSQL log directory (adjust path based on your installation)
+      - /var/log/postgresql:/var/log/postgresql:ro
+      # Alternative PostgreSQL data directory logs
+      - ${POSTGRES_LOG_DIR:-/var/lib/postgresql/17/main/log}:/var/lib/postgresql/log:ro
+      # System logs
+      - /var/log:/var/log/host:ro
+      # Position tracking
+      - promtail_positions:/tmp/positions
+    environment:
+      - APP_SERVER_IP=${APP_SERVER_IP:-127.0.0.1}
+    extra_hosts:
+      - "app-server:${APP_SERVER_IP:-127.0.0.1}"
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9080'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+        compress: "true"
+    labels:
+      - "service=promtail"
+      - "environment=${NODE_ENV:-production}"
+      - "server=database-server"
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  promtail_positions:
+    driver: local

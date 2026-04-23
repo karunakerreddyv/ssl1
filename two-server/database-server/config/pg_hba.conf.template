@@ -1,0 +1,65 @@
+# =============================================================================
+# PostgreSQL Client Authentication Configuration File (pg_hba.conf)
+# Pravaha Platform - Two-Server Deployment
+# =============================================================================
+#
+# This template shows the entries needed for Pravaha platform.
+# Add these lines to your pg_hba.conf file.
+#
+# Replace ${APP_SERVER_IP} with your actual app server IP address.
+# Use /32 for single host or appropriate CIDR for subnet.
+#
+# Connection Types:
+#   - host:     Allow non-SSL connections
+#   - hostssl:  Require SSL connections (recommended for production)
+#
+# =============================================================================
+
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# -----------------------------------------------------------------------------
+# Local connections (PostgreSQL server itself)
+# -----------------------------------------------------------------------------
+local   all             postgres                                peer
+local   all             all                                     peer
+
+# IPv4 local connections
+host    all             all             127.0.0.1/32            scram-sha-256
+
+# IPv6 local connections
+host    all             all             ::1/128                 scram-sha-256
+
+# -----------------------------------------------------------------------------
+# Pravaha Platform - App Server Access
+# Replace ${APP_SERVER_IP} with your app server IP
+# -----------------------------------------------------------------------------
+
+# Without SSL (for development/testing)
+# host    autoanalytics   pravaha         ${APP_SERVER_IP}/32     scram-sha-256
+# host    superset        pravaha         ${APP_SERVER_IP}/32     scram-sha-256
+# host    all             pravaha         ${APP_SERVER_IP}/32     scram-sha-256
+
+# With SSL (recommended for production)
+# hostssl autoanalytics   pravaha         ${APP_SERVER_IP}/32     scram-sha-256
+# hostssl superset        pravaha         ${APP_SERVER_IP}/32     scram-sha-256
+# hostssl all             pravaha         ${APP_SERVER_IP}/32     scram-sha-256
+
+# -----------------------------------------------------------------------------
+# Example: Allow entire subnet (less secure, use with caution)
+# -----------------------------------------------------------------------------
+# host    all             pravaha         192.168.1.0/24          scram-sha-256
+
+# =============================================================================
+# Notes:
+# =============================================================================
+#
+# After modifying this file, reload PostgreSQL:
+#   sudo systemctl reload postgresql
+#
+# Verify the configuration:
+#   sudo -u postgres psql -c "SELECT * FROM pg_hba_file_rules;"
+#
+# Test connection from app server:
+#   PGPASSWORD=password psql -h DB_SERVER_IP -U pravaha -d autoanalytics -c "SELECT 1;"
+#
+# =============================================================================

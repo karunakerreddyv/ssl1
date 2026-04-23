@@ -1,0 +1,157 @@
+# =============================================================================
+# Filebeat Configuration - PostgreSQL Log Collection
+# Pravaha Database Server (Two-Server Deployment)
+# =============================================================================
+#
+# Collects PostgreSQL logs from the host and sends to App Server's Logstash
+#
+# =============================================================================
+
+# Filebeat inputs
+filebeat.inputs:
+  # PostgreSQL main logs
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/postgresql/*.log
+    fields:
+      pravaha_service: postgres
+      server: database-server
+    fields_under_root: true
+    multiline:
+      pattern: '^\d{4}-\d{2}-\d{2}'
+      negate: true
+      match: after
+      max_lines: 500
+      timeout: 3s
+
+  # PostgreSQL data directory logs
+  - type: log
+    enabled: true
+    paths:
+      - /var/lib/postgresql/log/*.log
+    fields:
+      pravaha_service: postgres
+      server: database-server
+      log_type: data_dir
+    fields_under_root: true
+    multiline:
+      pattern: '^\d{4}-\d{2}-\d{2}'
+      negate: true
+      match: after
+      max_lines: 500
+      timeout: 3s
+
+  # System PostgreSQL logs (syslog)
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/host/syslog
+    include_lines: ['postgres']
+    fields:
+      pravaha_service: postgres-system
+      server: database-server
+    fields_under_root: true
+
+# Processors for log enrichment
+processors:
+  # Add host metadata
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+
+  # Parse PostgreSQL log format
+  - dissect:
+      tokenizer: "%{timestamp} [%{pid}] %{user}@%{database} %{level}: %{message}"
+      field: "message"
+      target_prefix: "postgres"
+      when:
+        regexp:
+          message: '^\d{4}-\d{2}-\d{2}.*\[.*\].*@.*'
+      ignore_failure: true
+
+  # Alternative parse without user@database
+  - dissect:
+      tokenizer: "%{timestamp} [%{pid}] %{level}: %{message}"
+      field: "message"
+      target_prefix: "postgres"
+      when:
+        regexp:
+          message: '^\d{4}-\d{2}-\d{2}.*\[.*\] \w+:'
+      ignore_failure: true
+
+  # Extract slow query duration
+  - dissect:
+      tokenizer: "duration: %{duration_ms} ms"
+      field: "message"
+      target_prefix: "postgres"
+      when:
+        contains:
+          message: "duration:"
+      ignore_failure: true
+
+  # Normalize log levels
+  - script:
+      lang: javascript
+      source: |
+        function process(event) {
+          var level = event.Get("postgres.level");
+          if (level) {
+            level = level.toLowerCase();
+            if (level === "debug" || level === "debug1" || level === "debug2" || level === "debug3" || level === "debug4" || level === "debug5") {
+              event.Put("log_level", "debug");
+            } else if (level === "info" || level === "notice" || level === "log") {
+              event.Put("log_level", "info");
+            } else if (level === "warning") {
+              event.Put("log_level", "warn");
+            } else if (level === "error" || level === "fatal" || level === "panic") {
+              event.Put("log_level", "error");
+            } else {
+              event.Put("log_level", "info");
+            }
+          }
+          return event;
+        }
+
+  # Add server identifier
+  - add_fields:
+      target: ''
+      fields:
+        server: database-server
+
+# Output to App Server's Logstash
+output.logstash:
+  hosts: ["app-server:5044"]
+  loadbalance: false
+  compression_level: 3
+
+  # Connection settings
+  timeout: 30s
+  pipelining: 2
+  bulk_max_size: 2048
+
+  # Backoff settings for reconnection
+  backoff.init: 1s
+  backoff.max: 60s
+
+# Logging configuration
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /usr/share/filebeat/logs
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+logging.metrics.enabled: false
+
+# Monitoring (disabled to reduce overhead)
+monitoring.enabled: false
+
+# Queue settings
+queue.mem:
+  events: 4096
+  flush.min_events: 512
+  flush.timeout: 1s
+
+# Path configuration
+path.data: /usr/share/filebeat/data
+path.logs: /usr/share/filebeat/logs

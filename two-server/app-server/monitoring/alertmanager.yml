@@ -1,0 +1,288 @@
+# =============================================================================
+# Alertmanager Configuration - Two-Server App Deployment
+# =============================================================================
+#
+# This configuration routes alerts based on severity and sends notifications
+# to configured receivers (email, Slack, PagerDuty, etc.).
+#
+# Alert Routing:
+#   - Critical alerts: Immediate notification, PagerDuty (if configured)
+#   - Warning alerts: Grouped and delayed, Slack/Email
+#   - Info alerts: Low priority, email digest
+#
+# Inhibition Rules:
+#   - Critical alerts inhibit warning alerts for the same service
+#   - Service down alerts inhibit component alerts
+#
+# =============================================================================
+
+global:
+  # Default SMTP settings (override with environment-specific values)
+  smtp_smarthost: '${SMTP_HOST:-smtp.gmail.com}:${SMTP_PORT:-587}'
+  smtp_from: '${SMTP_FROM_ADDRESS:-alertmanager@example.com}'
+  smtp_auth_username: '${SMTP_USER:-}'
+  smtp_auth_password: '${SMTP_PASS:-}'
+  smtp_require_tls: true
+
+  # Slack API URL (if using Slack notifications)
+  slack_api_url: '${SLACK_WEBHOOK_URL:-}'
+
+  # PagerDuty URL
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+  # Default resolve timeout
+  resolve_timeout: 5m
+
+# =============================================================================
+# Route Configuration
+# =============================================================================
+route:
+  # Default receiver for unmatched alerts
+  receiver: 'default-receiver'
+
+  # Group alerts by these labels
+  group_by: ['alertname', 'severity', 'service']
+
+  # Wait time before sending first notification for a new group
+  group_wait: 30s
+
+  # Wait time before sending notification for new alerts in existing group
+  group_interval: 5m
+
+  # Wait time before re-sending a notification for an alert group
+  repeat_interval: 4h
+
+  # Child routes for severity-based routing
+  routes:
+    # ---------------------------------------------------------------------------
+    # Critical Alerts - Immediate notification
+    # ---------------------------------------------------------------------------
+    - match:
+        severity: critical
+      receiver: 'critical-receiver'
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      continue: false
+
+    # ---------------------------------------------------------------------------
+    # Warning Alerts - Standard notification
+    # ---------------------------------------------------------------------------
+    - match:
+        severity: warning
+      receiver: 'warning-receiver'
+      group_wait: 1m
+      group_interval: 5m
+      repeat_interval: 4h
+      continue: false
+
+    # ---------------------------------------------------------------------------
+    # Info Alerts - Low priority digest
+    # ---------------------------------------------------------------------------
+    - match:
+        severity: info
+      receiver: 'info-receiver'
+      group_wait: 5m
+      group_interval: 30m
+      repeat_interval: 24h
+      continue: false
+
+    # ---------------------------------------------------------------------------
+    # Database Alerts - Route to DBA team
+    # ---------------------------------------------------------------------------
+    - match:
+        component: database
+      receiver: 'database-receiver'
+      group_by: ['alertname', 'database']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 2h
+      continue: true
+
+    # ---------------------------------------------------------------------------
+    # ML Service Alerts - Route to ML team
+    # ---------------------------------------------------------------------------
+    - match:
+        service: ml-service
+      receiver: 'ml-receiver'
+      group_by: ['alertname', 'job_type']
+      group_wait: 1m
+      group_interval: 5m
+      repeat_interval: 4h
+      continue: true
+
+# =============================================================================
+# Inhibition Rules
+# =============================================================================
+inhibit_rules:
+  # Critical alerts inhibit warning alerts for the same alertname and service
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service']
+
+  # Service down inhibits all other alerts for that service
+  - source_match:
+      alertname: 'ServiceDown'
+    target_match_re:
+      alertname: '.+'
+    equal: ['service']
+
+  # Node down inhibits all container/service alerts on that node
+  - source_match:
+      alertname: 'NodeDown'
+    target_match_re:
+      alertname: '.+'
+    equal: ['instance']
+
+  # Database connection failure inhibits query performance alerts
+  - source_match:
+      alertname: 'PostgreSQLDown'
+    target_match_re:
+      alertname: 'PostgreSQL.*'
+    equal: ['server']
+
+  # Inhibit Redis-related alerts when Redis is down
+  - source_match:
+      alertname: 'RedisDown'
+    target_match_re:
+      alertname: 'Redis.*'
+    equal: ['instance']
+
+  # Inhibit info alerts when warning or critical is firing for same alertname
+  - source_match_re:
+      severity: 'critical|warning'
+    target_match:
+      severity: 'info'
+    equal: ['alertname', 'service']
+
+# =============================================================================
+# Receivers Configuration
+# =============================================================================
+receivers:
+  # ---------------------------------------------------------------------------
+  # Default Receiver - Fallback for unmatched alerts
+  # ---------------------------------------------------------------------------
+  - name: 'default-receiver'
+    email_configs:
+      - to: '${ALERT_EMAIL:-ops@example.com}'
+        send_resolved: true
+        headers:
+          subject: '[Pravaha] {{ .Status | toUpper }} - {{ .GroupLabels.alertname }}'
+        html: |
+          {{ range .Alerts }}
+          <h3>{{ .Annotations.summary }}</h3>
+          <p><strong>Severity:</strong> {{ .Labels.severity }}</p>
+          <p><strong>Service:</strong> {{ .Labels.service }}</p>
+          <p>{{ .Annotations.description }}</p>
+          <p><strong>Started:</strong> {{ .StartsAt }}</p>
+          {{ if .EndsAt }}<p><strong>Resolved:</strong> {{ .EndsAt }}</p>{{ end }}
+          <hr>
+          {{ end }}
+
+  # ---------------------------------------------------------------------------
+  # Critical Receiver - Immediate alerting channels
+  # ---------------------------------------------------------------------------
+  - name: 'critical-receiver'
+    email_configs:
+      - to: '${CRITICAL_ALERT_EMAIL:-oncall@example.com}'
+        send_resolved: true
+        headers:
+          subject: '[CRITICAL] Pravaha - {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - channel: '${SLACK_CRITICAL_CHANNEL:-#alerts-critical}'
+        send_resolved: true
+        title: '{{ if eq .Status "firing" }}:fire:{{ else }}:white_check_mark:{{ end }} [{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Severity:* {{ .Labels.severity }}
+          *Service:* {{ .Labels.service }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          {{ end }}
+        color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+    pagerduty_configs:
+      - routing_key: '${PAGERDUTY_ROUTING_KEY:-}'
+        severity: critical
+        description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+          service: '{{ .GroupLabels.service }}'
+
+  # ---------------------------------------------------------------------------
+  # Warning Receiver - Standard alerting
+  # ---------------------------------------------------------------------------
+  - name: 'warning-receiver'
+    email_configs:
+      - to: '${ALERT_EMAIL:-ops@example.com}'
+        send_resolved: true
+        headers:
+          subject: '[WARNING] Pravaha - {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - channel: '${SLACK_WARNING_CHANNEL:-#alerts}'
+        send_resolved: true
+        title: '{{ if eq .Status "firing" }}:warning:{{ else }}:white_check_mark:{{ end }} [{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Service:* {{ .Labels.service }}
+          *Summary:* {{ .Annotations.summary }}
+          {{ end }}
+        color: '{{ if eq .Status "firing" }}warning{{ else }}good{{ end }}'
+
+  # ---------------------------------------------------------------------------
+  # Info Receiver - Low priority notifications
+  # ---------------------------------------------------------------------------
+  - name: 'info-receiver'
+    email_configs:
+      - to: '${ALERT_EMAIL:-ops@example.com}'
+        send_resolved: false
+        headers:
+          subject: '[INFO] Pravaha Daily Digest'
+
+  # ---------------------------------------------------------------------------
+  # Database Receiver - DBA team notifications
+  # ---------------------------------------------------------------------------
+  - name: 'database-receiver'
+    email_configs:
+      - to: '${DBA_EMAIL:-dba@example.com}'
+        send_resolved: true
+        headers:
+          subject: '[DATABASE] Pravaha - {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - channel: '${SLACK_DBA_CHANNEL:-#alerts-database}'
+        send_resolved: true
+        title: ':database: [{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Database:* {{ .Labels.database }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          {{ end }}
+
+  # ---------------------------------------------------------------------------
+  # ML Receiver - ML team notifications
+  # ---------------------------------------------------------------------------
+  - name: 'ml-receiver'
+    email_configs:
+      - to: '${ML_TEAM_EMAIL:-ml-team@example.com}'
+        send_resolved: true
+        headers:
+          subject: '[ML SERVICE] Pravaha - {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - channel: '${SLACK_ML_CHANNEL:-#alerts-ml}'
+        send_resolved: true
+        title: ':robot_face: [{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Job Type:* {{ .Labels.job_type }}
+          *Summary:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          {{ end }}
+
+# =============================================================================
+# Templates (Optional - for custom notification formatting)
+# =============================================================================
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'

@@ -1,0 +1,639 @@
+# =============================================================================
+# Pravaha Platform Alert Rules - Two-Server Deployment
+# =============================================================================
+#
+# Alert Categories:
+#   1. Service Health - Down/unhealthy services
+#   2. Performance - High latency, slow responses
+#   3. Resources - CPU, memory, disk usage
+#   4. Database - PostgreSQL (external server) health
+#   5. Redis - Cache health and memory
+#   6. ML Service - Training jobs, predictions
+#   7. Celery - Task queue health
+#   8. System - Node-level alerts
+#
+# Severity Levels:
+#   - critical: Immediate action required (pages on-call)
+#   - warning: Attention needed within hours
+#   - info: Informational, review during business hours
+#
+# =============================================================================
+
+groups:
+  # ===========================================================================
+  # Service Health Alerts
+  # ===========================================================================
+  - name: service_health
+    interval: 30s
+    rules:
+      # Backend Service Down
+      - alert: BackendDown
+        expr: up{job="backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: backend
+          component: application
+        annotations:
+          summary: "Backend service is down"
+          description: "Backend service has been down for more than 1 minute. All API requests are failing."
+          runbook_url: "https://docs.pravaha.io/runbooks/backend-down"
+
+      # ML Service Down
+      - alert: MLServiceDown
+        expr: up{job="ml-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ml-service
+          component: application
+        annotations:
+          summary: "ML Service is down"
+          description: "ML Service has been down for more than 1 minute. Training and predictions are unavailable."
+          runbook_url: "https://docs.pravaha.io/runbooks/ml-service-down"
+
+      # Disabled: Superset does not expose Prometheus metrics natively. Enable if using statsd-exporter.
+      # - alert: SupersetDown
+      #   expr: up{job="superset"} == 0
+      #   for: 2m
+      #   labels:
+      #     severity: warning
+      #     service: superset
+      #     component: application
+      #   annotations:
+      #     summary: "Superset BI service is down"
+      #     description: "Superset has been down for more than 2 minutes. Dashboards are unavailable."
+
+      # Service Restart Loop
+      - alert: ServiceRestartLoop
+        expr: changes(process_start_time_seconds{job=~"backend|ml-service"}[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "Service {{ $labels.job }} is restarting frequently"
+          description: "{{ $labels.job }} has restarted {{ $value }} times in the last 15 minutes."
+
+  # ===========================================================================
+  # Performance Alerts
+  # ===========================================================================
+  - name: performance
+    interval: 30s
+    rules:
+      # Backend High Latency (P95)
+      - alert: BackendHighLatency
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="backend"}[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+          component: application
+        annotations:
+          summary: "Backend P95 latency is high"
+          description: "Backend P95 response time is {{ $value | printf \"%.2f\" }}s (threshold: 2s)."
+
+      # Backend Critical Latency (P99)
+      - alert: BackendCriticalLatency
+        expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job="backend"}[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: critical
+          service: backend
+          component: application
+        annotations:
+          summary: "Backend P99 latency is critically high"
+          description: "Backend P99 response time is {{ $value | printf \"%.2f\" }}s (threshold: 5s)."
+
+      # ML Service High Latency
+      - alert: MLServiceHighLatency
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="ml-service"}[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-service
+          component: application
+        annotations:
+          summary: "ML Service P95 latency is high"
+          description: "ML Service P95 response time is {{ $value | printf \"%.2f\" }}s (threshold: 5s)."
+
+      # High Error Rate
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (job)
+          /
+          sum(rate(http_requests_total[5m])) by (job)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "High error rate on {{ $labels.job }}"
+          description: "{{ $labels.job }} has {{ $value | humanizePercentage }} error rate (threshold: 5%)."
+
+      # Request Rate Spike
+      - alert: RequestRateSpike
+        expr: |
+          (sum(rate(http_requests_total[5m])) by (job)
+          /
+          sum(rate(http_requests_total[1h] offset 5m)) by (job)) > 3
+        for: 5m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "Traffic spike detected on {{ $labels.job }}"
+          description: "{{ $labels.job }} is receiving {{ $value | printf \"%.1f\" }}x normal traffic."
+
+  # ===========================================================================
+  # Resource Alerts (Application Level)
+  # ===========================================================================
+  - name: resources
+    interval: 30s
+    rules:
+      # High Memory Usage
+      - alert: HighMemoryUsage
+        expr: |
+          (process_resident_memory_bytes{job=~"backend|ml-service"}
+          /
+          process_virtual_memory_max_bytes{job=~"backend|ml-service"}) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "High memory usage on {{ $labels.job }}"
+          description: "{{ $labels.job }} memory usage is at {{ $value | humanizePercentage }}."
+
+      # Critical Memory Usage
+      - alert: CriticalMemoryUsage
+        expr: |
+          (process_resident_memory_bytes{job=~"backend|ml-service"}
+          /
+          process_virtual_memory_max_bytes{job=~"backend|ml-service"}) > 0.95
+        for: 5m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "Critical memory usage on {{ $labels.job }}"
+          description: "{{ $labels.job }} memory usage is at {{ $value | humanizePercentage }}. OOM kill imminent."
+
+      # Node.js Event Loop Lag
+      - alert: NodeEventLoopLag
+        expr: nodejs_eventloop_lag_seconds{job="backend"} > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+          component: application
+        annotations:
+          summary: "Node.js event loop lag detected"
+          description: "Backend event loop lag is {{ $value | printf \"%.3f\" }}s (threshold: 100ms)."
+
+  # ===========================================================================
+  # Database Alerts (External PostgreSQL)
+  # ===========================================================================
+  - name: database
+    interval: 30s
+    rules:
+      # PostgreSQL Down
+      - alert: PostgreSQLDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: postgres
+          component: database
+          server: db-server
+        annotations:
+          summary: "PostgreSQL database is unreachable"
+          description: "Cannot connect to external PostgreSQL server. All database operations are failing."
+          runbook_url: "https://docs.pravaha.io/runbooks/postgres-down"
+
+      # PostgreSQL High Connections
+      - alert: PostgreSQLHighConnections
+        expr: |
+          sum(pg_stat_activity_count{state="active"})
+          /
+          pg_settings_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: postgres
+          component: database
+        annotations:
+          summary: "PostgreSQL connection pool is nearly exhausted"
+          description: "{{ $value | humanizePercentage }} of max connections are in use."
+
+      # PostgreSQL Connection Exhaustion
+      - alert: PostgreSQLConnectionExhaustion
+        expr: |
+          sum(pg_stat_activity_count{state="active"})
+          /
+          pg_settings_max_connections > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: postgres
+          component: database
+        annotations:
+          summary: "PostgreSQL connections nearly exhausted"
+          description: "{{ $value | humanizePercentage }} of max connections are in use. New connections may fail."
+
+      # PostgreSQL Slow Queries
+      - alert: PostgreSQLSlowQueries
+        expr: |
+          rate(pg_stat_statements_seconds_total[5m])
+          /
+          rate(pg_stat_statements_calls_total[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: postgres
+          component: database
+        annotations:
+          summary: "PostgreSQL slow queries detected"
+          description: "Average query time is {{ $value | printf \"%.2f\" }}s."
+
+      # PostgreSQL Replication Lag (if applicable)
+      - alert: PostgreSQLReplicationLag
+        expr: pg_replication_lag > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: postgres
+          component: database
+        annotations:
+          summary: "PostgreSQL replication lag detected"
+          description: "Replication lag is {{ $value | printf \"%.0f\" }} seconds."
+
+      # PostgreSQL Dead Tuples
+      - alert: PostgreSQLHighDeadTuples
+        expr: |
+          pg_stat_user_tables_n_dead_tup{relname!~"pg_.*"}
+          /
+          (pg_stat_user_tables_n_live_tup + pg_stat_user_tables_n_dead_tup + 1) > 0.2
+        for: 30m
+        labels:
+          severity: warning
+          service: postgres
+          component: database
+        annotations:
+          summary: "High dead tuples in table {{ $labels.relname }}"
+          description: "Table {{ $labels.relname }} has {{ $value | humanizePercentage }} dead tuples. Consider running VACUUM."
+
+      # Database Size Growing
+      - alert: DatabaseSizeGrowing
+        expr: |
+          (pg_database_size_bytes{datname="autoanalytics"}
+          -
+          pg_database_size_bytes{datname="autoanalytics"} offset 24h)
+          /
+          pg_database_size_bytes{datname="autoanalytics"} offset 24h > 0.2
+        for: 1h
+        labels:
+          severity: info
+          service: postgres
+          component: database
+        annotations:
+          summary: "Database size increased significantly"
+          description: "Database 'autoanalytics' has grown by {{ $value | humanizePercentage }} in the last 24 hours."
+
+  # ===========================================================================
+  # Redis Alerts
+  # ===========================================================================
+  - name: redis
+    interval: 30s
+    rules:
+      # Redis Down
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+          component: cache
+        annotations:
+          summary: "Redis is down"
+          description: "Redis cache/queue service is down. Caching and Celery tasks are unavailable."
+          runbook_url: "https://docs.pravaha.io/runbooks/redis-down"
+
+      # Redis High Memory
+      - alert: RedisHighMemory
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          service: redis
+          component: cache
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis memory usage is at {{ $value | humanizePercentage }}."
+
+      # Redis Memory Critical
+      - alert: RedisMemoryCritical
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.95
+        for: 5m
+        labels:
+          severity: critical
+          service: redis
+          component: cache
+        annotations:
+          summary: "Redis memory is critically high"
+          description: "Redis memory usage is at {{ $value | humanizePercentage }}. Evictions may occur."
+
+      # Redis Connected Clients High
+      - alert: RedisHighConnections
+        expr: redis_connected_clients > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+          component: cache
+        annotations:
+          summary: "Redis has many connections"
+          description: "Redis has {{ $value }} connected clients."
+
+      # Redis Rejected Connections
+      - alert: RedisRejectedConnections
+        expr: increase(redis_rejected_connections_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: redis
+          component: cache
+        annotations:
+          summary: "Redis is rejecting connections"
+          description: "Redis rejected {{ $value }} connections in the last 5 minutes."
+
+  # ===========================================================================
+  # ML Service Specific Alerts
+  # ===========================================================================
+  - name: ml_service
+    interval: 60s
+    rules:
+      # Training Job Failed
+      - alert: MLTrainingJobFailed
+        expr: increase(ml_training_jobs_failed_total[1h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-service
+          component: ml
+          job_type: training
+        annotations:
+          summary: "Multiple ML training jobs failed"
+          description: "{{ $value }} training jobs failed in the last hour."
+
+      # Training Job Timeout
+      - alert: MLTrainingJobTimeout
+        expr: ml_training_job_duration_seconds > 14400
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-service
+          component: ml
+          job_type: training
+        annotations:
+          summary: "ML training job running too long"
+          description: "Training job {{ $labels.job_id }} has been running for {{ $value | humanizeDuration }}."
+
+      # High Prediction Latency
+      - alert: MLPredictionHighLatency
+        expr: histogram_quantile(0.95, sum(rate(ml_prediction_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-service
+          component: ml
+          job_type: prediction
+        annotations:
+          summary: "ML prediction latency is high"
+          description: "P95 prediction latency is {{ $value | printf \"%.2f\" }}s."
+
+      # Model Load Failures
+      - alert: MLModelLoadFailure
+        expr: increase(ml_model_load_failures_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: ml-service
+          component: ml
+        annotations:
+          summary: "ML model load failures detected"
+          description: "{{ $value }} model load failures in the last 15 minutes."
+
+      # Prediction Queue Backlog
+      - alert: MLPredictionQueueBacklog
+        expr: ml_prediction_queue_size > 100
+        for: 10m
+        labels:
+          severity: warning
+          service: ml-service
+          component: ml
+          job_type: prediction
+        annotations:
+          summary: "ML prediction queue backlog"
+          description: "{{ $value }} predictions waiting in queue."
+
+  # ===========================================================================
+  # Celery Task Queue Alerts
+  # ===========================================================================
+  - name: celery
+    interval: 60s
+    rules:
+      # Celery Worker Down
+      - alert: CeleryWorkerDown
+        expr: |
+          absent(celery_workers_active{queue="training"}) == 1
+          or
+          absent(celery_workers_active{queue="prediction"}) == 1
+        for: 5m
+        labels:
+          severity: critical
+          service: celery
+          component: task-queue
+        annotations:
+          summary: "Celery workers are down"
+          description: "No active Celery workers detected for queue {{ $labels.queue }}."
+
+      # Celery Task Backlog - Enterprise Thresholds
+      # Uses Redis DB 3 key count as consistent metric
+      - alert: CeleryTaskBacklog
+        expr: redis_db_keys{db="db3"} > 500
+        for: 10m
+        labels:
+          severity: warning
+          service: celery
+          component: task-queue
+        annotations:
+          summary: "Celery task backlog growing"
+          description: "Celery queue (Redis DB 3) has {{ $value }} pending tasks."
+          runbook_url: "https://docs.pravaha.io/runbooks/celery-backlog"
+
+      # Celery Task Backlog Critical - Enterprise Thresholds
+      - alert: CeleryTaskBacklogCritical
+        expr: redis_db_keys{db="db3"} > 1000
+        for: 5m
+        labels:
+          severity: critical
+          service: celery
+          component: task-queue
+        annotations:
+          summary: "Celery task backlog critical"
+          description: "Celery queue (Redis DB 3) has {{ $value }} pending tasks. Workers may be overwhelmed."
+          runbook_url: "https://docs.pravaha.io/runbooks/celery-critical-backlog"
+
+      # Celery Task Failures
+      - alert: CeleryTaskFailures
+        expr: increase(celery_task_failed_total[15m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: celery
+          component: task-queue
+        annotations:
+          summary: "High Celery task failure rate"
+          description: "{{ $value }} tasks failed in the last 15 minutes."
+
+  # ===========================================================================
+  # System/Node Alerts (App Server)
+  # ===========================================================================
+  - name: system
+    interval: 30s
+    rules:
+      # Node High CPU
+      - alert: NodeHighCPU
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+          server: app-server
+        annotations:
+          summary: "High CPU usage on app server"
+          description: "CPU usage is at {{ $value | printf \"%.1f\" }}% on {{ $labels.instance }}."
+
+      # Node Critical CPU
+      - alert: NodeCriticalCPU
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+          server: app-server
+        annotations:
+          summary: "Critical CPU usage on app server"
+          description: "CPU usage is at {{ $value | printf \"%.1f\" }}% on {{ $labels.instance }}."
+
+      # Node High Memory
+      - alert: NodeHighMemory
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+          server: app-server
+        annotations:
+          summary: "High memory usage on app server"
+          description: "Memory usage is at {{ $value | printf \"%.1f\" }}%."
+
+      # Node Critical Memory
+      - alert: NodeCriticalMemory
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+          server: app-server
+        annotations:
+          summary: "Critical memory usage on app server"
+          description: "Memory usage is at {{ $value | printf \"%.1f\" }}%. OOM kills may occur."
+
+      # Disk Space Warning
+      - alert: DiskSpaceWarning
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs",mountpoint="/"}
+          /
+          node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs",mountpoint="/"}) * 100 < 20
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+          server: app-server
+        annotations:
+          summary: "Low disk space on app server"
+          description: "Disk space is at {{ $value | printf \"%.1f\" }}% free on {{ $labels.mountpoint }}."
+
+      # Disk Space Critical
+      - alert: DiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs",mountpoint="/"}
+          /
+          node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs",mountpoint="/"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+          server: app-server
+        annotations:
+          summary: "Critical disk space on app server"
+          description: "Only {{ $value | printf \"%.1f\" }}% disk space remaining on {{ $labels.mountpoint }}."
+
+      # High Load Average
+      - alert: NodeHighLoad
+        expr: node_load15 / count without(cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
+        for: 15m
+        labels:
+          severity: warning
+          component: system
+          server: app-server
+        annotations:
+          summary: "High load average on app server"
+          description: "15-minute load average is {{ $value | printf \"%.2f\" }} times the number of CPUs."
+
+  # ===========================================================================
+  # Prometheus Self-Monitoring
+  # ===========================================================================
+  - name: prometheus
+    interval: 30s
+    rules:
+      # Prometheus Scrape Failures
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: monitoring
+        annotations:
+          summary: "Prometheus target {{ $labels.job }} is down"
+          description: "Cannot scrape metrics from {{ $labels.instance }}."
+
+      # Prometheus Storage Full
+      - alert: PrometheusStorageFull
+        expr: |
+          (prometheus_tsdb_storage_blocks_bytes
+          /
+          (10 * 1024 * 1024 * 1024)) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          component: monitoring
+        annotations:
+          summary: "Prometheus storage is nearly full"
+          description: "Prometheus storage is at {{ $value | humanizePercentage }} capacity."
+
+      # High Cardinality
+      - alert: PrometheusHighCardinality
+        expr: prometheus_tsdb_head_series > 1000000
+        for: 1h
+        labels:
+          severity: info
+          component: monitoring
+        annotations:
+          summary: "High metric cardinality detected"
+          description: "Prometheus has {{ $value | humanize }} active time series."

@@ -1,0 +1,636 @@
+# ==============================================================================
+# F15 — upstream proxy_pass uses variables + http-level resolver so container recreates
+# (127.0.0.11, valid=30s in nginx.conf) pick up new IPs without nginx reload.
+# ==============================================================================
+# =============================================================================
+# Pravaha Platform - Site Configuration Template
+# Domain: ${DOMAIN}
+# Max Upload Size: ${MAX_UPLOAD_SIZE_MB}MB
+# =============================================================================
+# This is a template file. Use envsubst to generate the actual config:
+#   envsubst '${DOMAIN} ${MAX_UPLOAD_SIZE_MB}' < pravaha.conf.template > pravaha.conf
+# =============================================================================
+
+# Main server — handles both direct HTTPS and load-balancer-terminated HTTP
+# When behind a LB that terminates SSL, the LB forwards to port 80 with
+# X-Forwarded-Proto: https. Direct HTTP access (no LB) is redirected to HTTPS.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    listen 80;
+    listen [::]:80;
+    http2 on;
+    server_name ${DOMAIN};
+
+    # Allow Let's Encrypt ACME challenge (HTTP only, before redirect)
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Redirect direct HTTP access to HTTPS (skip if behind LB with SSL termination)
+    # The $should_redirect_https map is defined in nginx.conf
+    # Use flag variable to bypass redirect for health check endpoints (Docker HEALTHCHECK)
+    set $do_redirect $should_redirect_https;
+    if ($request_uri = /health) {
+        set $do_redirect 0;
+    }
+    if ($do_redirect) {
+        return 301 https://$server_name$request_uri;
+    }
+
+    # SSL Configuration
+    ssl_certificate /etc/nginx/ssl/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+
+    # SSL Security Settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # OCSP Stapling (only works with CA-signed certificates, not self-signed)
+    # Uncomment these lines when using Let's Encrypt or other CA certificates:
+    # ssl_stapling on;
+    # ssl_stapling_verify on;
+    # resolver 8.8.8.8 8.8.4.4 valid=300s;
+    # resolver_timeout 5s;
+
+    # Security Headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' wss: ws: https://cdn.jsdelivr.net https://httpbin.org; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+
+    # Upload Size Limit (from .env MAX_UPLOAD_SIZE_MB)
+    client_max_body_size ${MAX_UPLOAD_SIZE_MB}m;
+
+    # ==========================================================================
+    # Health Check Endpoint
+    # ==========================================================================
+    location /health {
+        access_log off;
+        default_type text/plain;
+        return 200 "OK";
+    }
+
+    # ==========================================================================
+    # API Routing Strategy (Inverted Logic - Enterprise Pattern)
+    # -----------------------------------------------------------------------
+    # Pravaha backend and Apache Superset both serve /api/v1/ routes.
+    # Instead of listing Superset's API resources (fragile, breaks on
+    # upgrades), we list Pravaha's own routes (which WE control) and route
+    # everything else under /api/v1/ to Superset automatically.
+    #
+    # This follows the enterprise "allowlist what you own" principle:
+    #   - New Superset resources auto-route without config changes
+    #   - Only update this list when adding new Pravaha backend routes
+    #
+    # Routing precedence:
+    #   1. /api/v1/auth/login       → Backend (login-specific rate limit)
+    #   2. /api/v1/{pravaha-route}/ → Backend (regex match on OUR routes)
+    #   3. /api/v1/*                → Superset (default for all others)
+    #   4. /api/*                   → Backend (catch-all: /api/internal/, etc.)
+    # ==========================================================================
+
+    # Login endpoint — strict rate limiting (^~ prevents regex override)
+    location ^~ /api/v1/auth/login {
+        limit_req zone=login_limit burst=5 nodelay;
+
+        set $upstream_backend "backend:3000"; proxy_pass http://$upstream_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+    }
+
+    # Pravaha Backend API — matches OUR route prefixes from v1.ts
+    # UPDATE THIS LIST when adding new top-level route prefixes in v1.ts
+    location ~ ^/api/v1/(auth|sessions|workflows|executions|execution-monitor|webhooks?|credentials|connectors|jobs|resource-planning|policies|audit|dlq|migrations|templates|users|superset-sync|analytics|public|lineage|ml|connections|quality-rules|data-contracts|transformations|triggers|compliance|ccm|admin|ai|super-admin|datasets|quality|incidents|rule-templates|usage|access-requests|approvals|environments|health|docs|navigation|settings)(/|$) {
+        limit_req zone=api_limit burst=1000 nodelay;
+        limit_conn conn_limit 100;
+
+        set $upstream_backend "backend:3000"; proxy_pass http://$upstream_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 300s;
+
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
+    }
+
+    # Superset API — all unmatched /api/v1/ paths route to Superset
+    # Handles: database, chart, dashboard, saved_query, query, log, dataset,
+    #   datasource, explore, sqllab, security, report, me, tag, etc.
+    # Future Superset resources automatically route here — no config changes needed
+    location /api/v1/ {
+        # Superset 6.0 with SUPERSET_APP_ROOT=/insights requires /insights prefix on all routes
+        rewrite ^(.*)$ /insights$1 break;
+
+        # Remove upstream security headers — nginx server-level headers are the single source
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-XSS-Protection;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header Permissions-Policy;
+
+        set $upstream_superset "superset:8088"; proxy_pass http://$upstream_superset;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Forwarded-Prefix /insights;
+        proxy_set_header X-Script-Name /insights;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 300s;
+    }
+
+    # Internal-only API routes (Alertmanager webhook, monitoring, etc.)
+    # Restricted to Docker/private network IPs — not accessible from public internet
+    location /api/internal/ {
+        allow 127.0.0.1;
+        allow 10.0.0.0/8;
+        allow 172.16.0.0/12;
+        allow 192.168.0.0/16;
+        deny all;
+
+        set $upstream_backend "backend:3000"; proxy_pass http://$upstream_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header Connection "";
+    }
+
+    # Catch-all for non-v1 API routes
+    location /api/ {
+        limit_req zone=api_limit burst=1000 nodelay;
+        limit_conn conn_limit 100;
+
+        set $upstream_backend "backend:3000"; proxy_pass http://$upstream_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 300s;
+
+        proxy_buffering on;
+        proxy_buffer_size 4k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
+    }
+
+    # ==========================================================================
+    # WebSocket - Backend Service
+    # ==========================================================================
+    location /ws {
+        set $upstream_backend "backend:3000"; proxy_pass http://$upstream_backend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+
+        proxy_connect_timeout 7d;
+        proxy_send_timeout 7d;
+        proxy_read_timeout 7d;
+    }
+
+    # ==========================================================================
+    # Superset - Analytics & BI
+    # Proxied via /insights path
+    # ==========================================================================
+    location /insights/ {
+        # Superset 6.0 with SUPERSET_APP_ROOT=/insights registers all routes under /insights
+        # Do NOT strip prefix — pass /insights/... as-is to Superset
+
+        # Remove upstream security headers — nginx server-level headers are the single source
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-XSS-Protection;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header Permissions-Policy;
+
+        set $upstream_superset "superset:8088"; proxy_pass http://$upstream_superset;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Script-Name /insights;
+        proxy_set_header X-Forwarded-Prefix /insights;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 300s;
+
+        # Allow larger bodies for dashboard imports (uses server-level limit)
+        client_max_body_size ${MAX_UPLOAD_SIZE_MB}m;
+    }
+
+    # Superset static assets (loaded by iframe)
+    location /static/assets/ {
+        # Superset 6.0 with SUPERSET_APP_ROOT=/insights requires /insights prefix
+        rewrite ^(.*)$ /insights$1 break;
+
+        # Remove upstream security headers — nginx server-level headers are the single source
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-XSS-Protection;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header Permissions-Policy;
+
+        set $upstream_superset "superset:8088"; proxy_pass http://$upstream_superset;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Prefix /insights;
+        proxy_set_header X-Script-Name /insights;
+        proxy_set_header Connection "";
+
+        # Enable proxy caching for static assets
+        proxy_cache static_cache;
+        proxy_cache_valid 200 1d;
+        proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+        add_header X-Cache-Status $upstream_cache_status always;
+        add_header Cache-Control "public, max-age=86400" always;
+        # Repeat security headers (nginx add_header in location overrides server-level)
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' wss: ws: https://cdn.jsdelivr.net https://httpbin.org; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+    }
+
+    location /static/appbuilder/ {
+        # Superset 6.0 with SUPERSET_APP_ROOT=/insights requires /insights prefix
+        rewrite ^(.*)$ /insights$1 break;
+
+        # Remove upstream security headers — nginx server-level headers are the single source
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-XSS-Protection;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header Permissions-Policy;
+
+        set $upstream_superset "superset:8088"; proxy_pass http://$upstream_superset;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Prefix /insights;
+        proxy_set_header X-Script-Name /insights;
+        proxy_set_header Connection "";
+
+        # Enable proxy caching for static assets
+        proxy_cache static_cache;
+        proxy_cache_valid 200 1d;
+        proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+        add_header X-Cache-Status $upstream_cache_status always;
+        add_header Cache-Control "public, max-age=86400" always;
+        # Repeat security headers (nginx add_header in location overrides server-level)
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' wss: ws: https://cdn.jsdelivr.net https://httpbin.org; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+    }
+
+    # Superset bare URL proxy
+    # Superset 6.0 with SUPERSET_APP_ROOT=/insights registers ALL routes under /insights.
+    # Bare URLs (without /insights prefix) may come from:
+    #   - Old bookmarks or direct browser navigation
+    #   - Flask-AppBuilder views with hardcoded href (menu items)
+    #   - React SPA internal API calls (tabstateview, tableschemaview)
+    #   - Permalink/short URL redirects (/r/)
+    # Rewrite to add /insights prefix and proxy to Superset (preserves HTTP methods).
+    # UPDATE THIS LIST when upgrading Superset if new FAB views are added.
+    location ~ ^/(superset|dashboard|chart|tablemodelview|tabstateview|tableschemaview|savedqueryview|savedqueryviewapi|tagview|explore|rowlevelsecurity|annotationlayer|csstemplatemodelview|csstemplateasyncmodelview|databaseview|logmodelview|datasource|csvtodatabaseview|columnartodatabaseview|exceltodatabaseview|r|alert|report|sqllab|embedded|dataset|roles|dashboardasync|sliceasync|dynamic-plugins|sqlmetricinlineview|tablecolumninlineview|userinfoeditview|resetmypassword|resetpassword|lang|back|profile|user_info|theme|swagger|ping|healthcheck|groups|list_groups|registrations|register|actionlog)(/|$) {
+        # Superset 6.0 with SUPERSET_APP_ROOT=/insights requires /insights prefix
+        rewrite ^(.*)$ /insights$1 break;
+
+        # Remove upstream security headers — nginx server-level headers are the single source
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header X-XSS-Protection;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header Permissions-Policy;
+
+        set $upstream_superset "superset:8088"; proxy_pass http://$upstream_superset;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Script-Name /insights;
+        proxy_set_header X-Forwarded-Prefix /insights;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 300s;
+    }
+
+    # ==========================================================================
+    # Grafana - Log Viewer (Enterprise Logging)
+    # Access logs at /logs/ - requires logging stack to be enabled
+    # Uses dynamic resolution - nginx starts even if Grafana isn't running
+    # ==========================================================================
+    location /logs/ {
+        set $grafana_upstream grafana-logs:3000;
+        proxy_pass http://$grafana_upstream;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        # WebSocket support for live log tailing
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+
+        # Disable buffering for real-time updates
+        proxy_buffering off;
+    }
+
+    # Grafana API and live endpoints (WebSocket + REST)
+    location /logs/api/ {
+        set $grafana_upstream grafana-logs:3000;
+        proxy_pass http://$grafana_upstream;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        # WebSocket support for Grafana Live (log streaming, live tailing)
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+
+        # Disable buffering for real-time streaming
+        proxy_buffering off;
+    }
+
+    # ==========================================================================
+    # Kibana - ELK Log Viewer (Enterprise Logging)
+    # Access Elasticsearch logs at /elk/ - requires ELK stack to be enabled
+    # Usage: docker compose -f docker-compose.yml -f docker-compose.elk.yml up -d
+    # Uses dynamic resolution - nginx starts even if Kibana isn't running
+    # ==========================================================================
+    location /elk/ {
+        set $kibana_upstream kibana:5601;
+        proxy_pass http://$kibana_upstream/elk/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        # WebSocket support for Kibana live features
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+
+        # Disable buffering for real-time updates
+        proxy_buffering off;
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+    }
+
+    # Kibana API endpoints
+    location /elk/api/ {
+        set $kibana_upstream kibana:5601;
+        proxy_pass http://$kibana_upstream/elk/api/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+
+    # ==========================================================================
+    # Jupyter Notebook Server
+    # Access notebooks at /notebooks/ - starts automatically as a core service
+    # Uses dynamic resolution - nginx starts even if Jupyter isn't running
+    # Jupyter is configured with --ServerApp.base_url=/notebooks/ so it
+    # expects to receive the full /notebooks/... URI (no trailing / on proxy_pass)
+    # ==========================================================================
+    location /notebooks/ {
+        set $jupyter_upstream jupyter:8888;
+        proxy_pass http://$jupyter_upstream;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        # WebSocket support for Jupyter kernels and terminals
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # Long-running notebook/kernel connections
+        proxy_connect_timeout 7d;
+        proxy_send_timeout 7d;
+        proxy_read_timeout 7d;
+
+        # Disable buffering for real-time output
+        proxy_buffering off;
+    }
+
+    # ==========================================================================
+    # ML Service (Optional)
+    # Uses dynamic resolution - nginx starts even if ML service isn't running
+    # ==========================================================================
+    location /ml/api/ {
+        set $ml_upstream ml-service:8001;
+        # Strip /ml prefix — only matches /ml/api/* (not frontend SPA routes like /ml/datasets)
+        rewrite ^/ml(/.*)$ $1 break;
+
+        proxy_pass http://$ml_upstream;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 660s;
+        proxy_read_timeout 660s;
+    }
+
+    # ==========================================================================
+    # Frontend - React SPA
+    # Default route - serves static files
+    # ==========================================================================
+    location / {
+        set $upstream_frontend "frontend:80"; proxy_pass http://$upstream_frontend;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $real_scheme;
+        proxy_set_header Connection "";
+
+        # Don't cache HTML for SPA
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+        # Repeat security headers (nginx add_header in location overrides server-level)
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' wss: ws: https://cdn.jsdelivr.net https://httpbin.org; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+    }
+
+    # Frontend static assets
+    location /assets/ {
+        set $upstream_frontend "frontend:80"; proxy_pass http://$upstream_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+
+        # Long cache for hashed assets
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        # Repeat security headers (nginx add_header in location overrides server-level)
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' wss: ws: https://cdn.jsdelivr.net https://httpbin.org; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+    }
+
+    # ==========================================================================
+    # Favicon and Static Resources
+    # ==========================================================================
+    location = /favicon.ico {
+        set $upstream_frontend "frontend:80"; proxy_pass http://$upstream_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+
+        access_log off;
+        log_not_found off;
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+        # Repeat security headers (nginx add_header in location overrides server-level)
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https://www.gravatar.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src 'self' wss: ws: https://cdn.jsdelivr.net https://httpbin.org; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self';" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+    }
+
+    location = /robots.txt {
+        set $upstream_frontend "frontend:80"; proxy_pass http://$upstream_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+
+        access_log off;
+        log_not_found off;
+    }
+
+    # ==========================================================================
+    # Error Pages
+    # ==========================================================================
+    # Proxy error pages to frontend for consistent branding
+    error_page 500 502 503 504 /error.html;
+    location = /error.html {
+        set $upstream_frontend "frontend:80"; proxy_pass http://$upstream_frontend/error.html;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        internal;
+    }
+
+    # Fallback error page if frontend is unavailable
+    location = /50x.html {
+        root /usr/share/nginx/html;
+        internal;
+    }
+}

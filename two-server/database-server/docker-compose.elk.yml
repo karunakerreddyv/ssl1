@@ -1,0 +1,75 @@
+# =============================================================================
+# Pravaha Platform - Database Server ELK Stack
+# Filebeat Agent for PostgreSQL Log Collection (Two-Server Deployment)
+# =============================================================================
+#
+# This deployment runs a lightweight Filebeat agent that collects PostgreSQL
+# logs from the host system and sends them to the App Server's Logstash.
+#
+# Prerequisites:
+#   - App Server must have Logstash running and accepting beats on port 5044
+#   - PostgreSQL logs must be stored in /var/log/postgresql/
+#   - Set APP_SERVER_IP in your .env file
+#
+# Usage:
+#   # Set environment
+#   export APP_SERVER_IP=192.168.1.10
+#
+#   # Start the logging agent
+#   docker compose -f docker-compose.elk.yml up -d
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Filebeat - Log Collection Agent
+  # Collects PostgreSQL logs and sends to App Server's Logstash
+  # ===========================================================================
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.11.3
+    container_name: pravaha-db-filebeat
+    hostname: database-server-filebeat
+    restart: unless-stopped
+    user: root  # Required to read system logs
+    command: filebeat -e -strict.perms=false
+    volumes:
+      - ./elk/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - filebeat_data:/usr/share/filebeat/data
+      # PostgreSQL log directories
+      - /var/log/postgresql:/var/log/postgresql:ro
+      - ${POSTGRES_LOG_DIR:-/var/lib/postgresql/17/main/log}:/var/lib/postgresql/log:ro
+      # System logs
+      - /var/log:/var/log/host:ro
+    environment:
+      - APP_SERVER_IP=${APP_SERVER_IP:-127.0.0.1}
+    extra_hosts:
+      - "app-server:${APP_SERVER_IP:-127.0.0.1}"
+    network_mode: host
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "filebeat test config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+    labels:
+      - "com.pravaha.service=filebeat"
+      - "com.pravaha.component=elk"
+      - "com.pravaha.server=database-server"
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  filebeat_data:
+    driver: local

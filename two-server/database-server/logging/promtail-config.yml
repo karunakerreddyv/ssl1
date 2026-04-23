@@ -1,0 +1,193 @@
+# =============================================================================
+# Promtail Configuration for Pravaha Platform (Database Server)
+# Collects PostgreSQL logs and sends to App Server's Loki
+# =============================================================================
+#
+# This configuration is designed for a dedicated database server running
+# native PostgreSQL (not containerized).
+#
+# Log locations:
+#   - PostgreSQL logs: /var/log/postgresql/*.log
+#   - PostgreSQL data dir logs: /var/lib/postgresql/*/main/log/*.log
+#
+# =============================================================================
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions/positions.yaml
+
+clients:
+  # Push to App Server's Loki instance
+  - url: http://app-server:3100/loki/api/v1/push
+    batchwait: 1s
+    batchsize: 1048576  # 1MB
+    timeout: 30s  # Increased for network latency
+    backoff_config:
+      min_period: 1s
+      max_period: 5m
+      max_retries: 20
+    # External labels to identify database server logs
+    external_labels:
+      source_server: database-server
+      deployment_type: two-server
+
+scrape_configs:
+  # ==========================================================================
+  # PostgreSQL Server Logs (/var/log/postgresql/)
+  # Standard Debian/Ubuntu PostgreSQL log location
+  # ==========================================================================
+  - job_name: postgresql_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: pravaha-db
+          service: postgres
+          server: database-server
+          __path__: /var/log/postgresql/*.log
+
+    pipeline_stages:
+      # =======================================================================
+      # PostgreSQL Log Parsing
+      # Format: timestamp [pid] user@db LOG: message
+      # Or: timestamp [pid] LOG: message
+      # =======================================================================
+      - multiline:
+          firstline: '^\d{4}-\d{2}-\d{2}'
+          max_wait_time: 3s
+
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? \w+) \[(?P<pid>\d+)\](?: (?P<user>\w+)@(?P<database>\w+))? (?P<level>\w+):\s*(?P<message>.*)'
+
+      - labels:
+          level:
+          user:
+          database:
+          pid:
+
+      # Normalize log levels
+      - template:
+          source: level
+          template: '{{ if eq .level "DEBUG" }}debug{{ else if eq .level "INFO" }}info{{ else if eq .level "NOTICE" }}info{{ else if eq .level "WARNING" }}warn{{ else if eq .level "ERROR" }}error{{ else if eq .level "LOG" }}info{{ else if eq .level "FATAL" }}error{{ else if eq .level "PANIC" }}error{{ else }}info{{ end }}'
+
+      - labels:
+          level:
+
+      # Extract slow query information
+      - regex:
+          expression: 'duration: (?P<duration_ms>[0-9.]+) ms'
+
+      - labels:
+          duration_ms:
+
+      # Extract query information
+      - regex:
+          expression: 'statement: (?P<statement>.*)'
+
+      # Mark slow queries (>100ms) as warnings
+      - template:
+          source: slow_query
+          template: '{{ if .duration_ms }}{{ if gt (atof .duration_ms) 100.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
+
+      - labels:
+          slow_query:
+
+      - timestamp:
+          source: timestamp
+          format: '2006-01-02 15:04:05.000 MST'
+          fallback_formats:
+            - '2006-01-02 15:04:05 MST'
+            - RFC3339
+
+      - output:
+          source: message
+
+  # ==========================================================================
+  # PostgreSQL Data Directory Logs
+  # Alternative log location in data directory
+  # ==========================================================================
+  - job_name: postgresql_data_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: pravaha-db
+          service: postgres
+          server: database-server
+          log_type: data_dir
+          __path__: /var/lib/postgresql/log/*.log
+
+    pipeline_stages:
+      - multiline:
+          firstline: '^\d{4}-\d{2}-\d{2}'
+          max_wait_time: 3s
+
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? \w+) \[(?P<pid>\d+)\](?: (?P<user>\w+)@(?P<database>\w+))? (?P<level>\w+):\s*(?P<message>.*)'
+
+      - labels:
+          level:
+          user:
+          database:
+          pid:
+
+      - template:
+          source: level
+          template: '{{ if eq .level "DEBUG" }}debug{{ else if eq .level "INFO" }}info{{ else if eq .level "NOTICE" }}info{{ else if eq .level "WARNING" }}warn{{ else if eq .level "ERROR" }}error{{ else if eq .level "LOG" }}info{{ else if eq .level "FATAL" }}error{{ else if eq .level "PANIC" }}error{{ else }}info{{ end }}'
+
+      - labels:
+          level:
+
+      - regex:
+          expression: 'duration: (?P<duration_ms>[0-9.]+) ms'
+
+      - labels:
+          duration_ms:
+
+      - timestamp:
+          source: timestamp
+          format: '2006-01-02 15:04:05.000 MST'
+          fallback_formats:
+            - '2006-01-02 15:04:05 MST'
+            - RFC3339
+
+      - output:
+          source: message
+
+  # ==========================================================================
+  # System PostgreSQL Logs (syslog/journald captured to file)
+  # ==========================================================================
+  - job_name: system_postgres_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: pravaha-db
+          service: postgres-system
+          server: database-server
+          __path__: /var/log/host/syslog
+
+    pipeline_stages:
+      # Filter only PostgreSQL-related lines
+      - match:
+          selector: '{service="postgres-system"}'
+          stages:
+            - regex:
+                expression: 'postgres'
+                source: message
+            - drop:
+                expression: '.*'
+                drop_counter_reason: "not_postgres_related"
+
+      - regex:
+          expression: '(?P<timestamp>\w+ +\d+ \d{2}:\d{2}:\d{2}) (?P<hostname>\S+) postgres(?:\[(?P<pid>\d+)\])?: (?P<message>.*)'
+
+      - labels:
+          hostname:
+          pid:
+
+      - output:
+          source: message

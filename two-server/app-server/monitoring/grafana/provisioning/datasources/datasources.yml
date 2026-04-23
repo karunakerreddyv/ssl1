@@ -1,0 +1,202 @@
+# =============================================================================
+# Grafana Datasources Provisioning - Two-Server Deployment
+# =============================================================================
+#
+# This file automatically configures Grafana datasources on startup.
+# Datasources are provisioned from this YAML file and cannot be modified
+# through the Grafana UI (they are marked as non-editable).
+#
+# Datasources:
+#   - Prometheus: Primary metrics storage (local)
+#   - Loki: Log aggregation (if logging stack is deployed)
+#   - Alertmanager: Alert management integration
+#
+# =============================================================================
+
+apiVersion: 1
+
+# Delete datasources that are no longer in config
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+  - name: Loki
+    orgId: 1
+  - name: Alertmanager
+    orgId: 1
+
+# Datasource definitions
+datasources:
+  # ===========================================================================
+  # Prometheus - Metrics
+  # Primary datasource for all metrics visualization
+  # ===========================================================================
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    orgId: 1
+    uid: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      # Time interval for step calculations
+      timeInterval: "15s"
+      # Query timeout
+      queryTimeout: "60s"
+      # Enable exemplars (if available)
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+      # Incremental querying for better performance
+      incrementalQuerying: true
+      incrementalQueryOverlapWindow: "10m"
+      # Disable alerting for this datasource (using Alertmanager instead)
+      manageAlerts: false
+      # Custom HTTP headers (optional)
+      # httpHeaderName1: 'X-Custom-Header'
+    # secureJsonData:
+    #   httpHeaderValue1: 'custom-value'
+    version: 1
+
+  # ===========================================================================
+  # Loki - Logs
+  # Log aggregation datasource (works with docker-compose.logging.yml)
+  # ===========================================================================
+  - name: Loki
+    type: loki
+    access: proxy
+    orgId: 1
+    uid: loki
+    url: http://loki:3100
+    isDefault: false
+    editable: false
+    jsonData:
+      httpHeaderName1: 'X-Scope-OrgID'
+      # Max lines to return in log queries
+      maxLines: 5000
+      # Derived fields for linking to traces (optional)
+      derivedFields:
+        - datasourceUid: tempo
+          matcherRegex: "trace_id=(\\w+)"
+          name: trace_id
+          url: "$${__value.raw}"
+      # Query timeout
+      timeout: 60
+    secureJsonData:
+      httpHeaderValue1: '1'
+    version: 1
+
+  # ===========================================================================
+  # Alertmanager - Alert Management
+  # Integration with Prometheus Alertmanager
+  # ===========================================================================
+  - name: Alertmanager
+    type: alertmanager
+    access: proxy
+    orgId: 1
+    uid: alertmanager
+    url: http://alertmanager:9093
+    isDefault: false
+    editable: false
+    jsonData:
+      # Implementation type (prometheus or cortex/mimir)
+      implementation: prometheus
+      # Handle Grafana-managed alerts
+      handleGrafanaManagedAlerts: true
+    version: 1
+
+  # ===========================================================================
+  # PostgreSQL - Direct Database Access (Optional)
+  # Useful for custom SQL queries and dashboards
+  # Connects to external database server
+  # ===========================================================================
+  # Uncomment below to enable direct PostgreSQL access from Grafana
+  # NOTE: Requires setting environment variables in docker-compose
+  #
+  # - name: PostgreSQL
+  #   type: postgres
+  #   access: proxy
+  #   orgId: 1
+  #   uid: postgres
+  #   url: ${DB_SERVER_IP:-postgres}:${POSTGRES_PORT:-5432}
+  #   user: ${POSTGRES_USER:-pravaha}
+  #   database: ${PLATFORM_DB:-autoanalytics}
+  #   isDefault: false
+  #   editable: false
+  #   jsonData:
+  #     sslmode: ${POSTGRES_SSL_MODE:-prefer}
+  #     maxOpenConns: 5
+  #     maxIdleConns: 2
+  #     connMaxLifetime: 14400
+  #     postgresVersion: 1500  # PostgreSQL 15
+  #     timescaledb: false
+  #   secureJsonData:
+  #     password: ${POSTGRES_PASSWORD}
+  #   version: 1
+
+  # ===========================================================================
+  # Redis - Direct Redis Access (Optional)
+  # Useful for Redis-specific dashboards
+  # ===========================================================================
+  # Uncomment below to enable direct Redis access from Grafana
+  # Requires: grafana-redis-datasource plugin
+  #
+  # - name: Redis
+  #   type: redis-datasource
+  #   access: proxy
+  #   orgId: 1
+  #   uid: redis
+  #   url: redis://redis:6379
+  #   isDefault: false
+  #   editable: false
+  #   jsonData:
+  #     client: standalone
+  #     poolSize: 5
+  #     timeout: 10
+  #     pingInterval: 0
+  #     pipelineWindow: 0
+  #   secureJsonData:
+  #     password: ${REDIS_PASSWORD:-}
+  #   version: 1
+
+  # ===========================================================================
+  # Tempo - Distributed Tracing (Optional)
+  # Enable if OpenTelemetry tracing is configured
+  # ===========================================================================
+  # Uncomment below to enable Tempo tracing integration
+  #
+  # - name: Tempo
+  #   type: tempo
+  #   access: proxy
+  #   orgId: 1
+  #   uid: tempo
+  #   url: http://tempo:3200
+  #   isDefault: false
+  #   editable: false
+  #   jsonData:
+  #     httpMethod: GET
+  #     tracesToLogs:
+  #       datasourceUid: loki
+  #       tags: ['service', 'instance']
+  #       mappedTags: [{ key: 'service.name', value: 'service' }]
+  #       mapTagNamesEnabled: true
+  #       spanStartTimeShift: '1h'
+  #       spanEndTimeShift: '-1h'
+  #       filterByTraceID: true
+  #       filterBySpanID: false
+  #     tracesToMetrics:
+  #       datasourceUid: prometheus
+  #       tags: [{ key: 'service.name', value: 'service' }]
+  #       queries:
+  #         - name: 'Request rate'
+  #           query: 'sum(rate(http_server_request_duration_seconds_count{$$__tags}[5m]))'
+  #     nodeGraph:
+  #       enabled: true
+  #     search:
+  #       hide: false
+  #     lokiSearch:
+  #       datasourceUid: loki
+  #     serviceMap:
+  #       datasourceUid: prometheus
+  #   version: 1

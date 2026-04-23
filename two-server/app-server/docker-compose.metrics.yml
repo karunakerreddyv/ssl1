@@ -1,0 +1,318 @@
+# =============================================================================
+# Pravaha Platform - Prometheus Metrics Stack (Two-Server Deployment)
+# Prometheus + Grafana + Alertmanager + Exporters for full observability
+# =============================================================================
+#
+# This file adds enterprise-grade metrics monitoring to the platform.
+# Metrics from all services are collected, stored, and visualized via Grafana.
+#
+# For two-server deployment, metrics collection runs on the app-server.
+# PostgreSQL exporter connects to the external database server.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.metrics.yml up -d
+#
+# Access:
+#   - Grafana UI: http://localhost:3002 (or https://your-domain.com:3002)
+#   - Prometheus: http://localhost:9090 (internal only)
+#   - Alertmanager: http://localhost:9093 (internal only)
+#
+# External Database Server:
+#   - Set DB_SERVER_IP in .env to the IP of your external PostgreSQL server
+#   - Ensure postgres_exporter can reach the database on port 5432
+#
+# =============================================================================
+
+# =============================================================================
+# Default Logging Configuration (YAML anchor)
+# Prevents disk exhaustion by rotating logs: max 10MB per file, keep 5 files
+# =============================================================================
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# =============================================================================
+# Common Labels (YAML anchor)
+# =============================================================================
+x-labels: &default-labels
+  environment: "${NODE_ENV:-production}"
+  stack: "metrics"
+
+services:
+  # ===========================================================================
+  # Prometheus - Metrics Collection and Storage
+  # Scrapes metrics from all services and stores time-series data
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: pravaha-prometheus
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}'
+      - '--storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-10GB}'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts:/etc/prometheus/alerts:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - pravaha-network
+    labels:
+      <<: *default-labels
+      service: "prometheus"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # Grafana - Metrics Visualization Dashboard
+  # Web UI for viewing metrics, creating dashboards, and alerting
+  # ===========================================================================
+  grafana-metrics:
+    image: grafana/grafana:10.2.3
+    container_name: pravaha-grafana-metrics
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      # Server Configuration
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s:${GRAFANA_METRICS_PORT:-3002}/
+      # Security
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      # Features
+      - GF_EXPLORE_ENABLED=true
+      - GF_ALERTING_ENABLED=false
+      - GF_UNIFIED_ALERTING_ENABLED=true
+      # Plugins
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource,grafana-piechart-panel
+      # Logging
+      - GF_LOG_MODE=console
+      - GF_LOG_LEVEL=info
+      # Paths
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - grafana_metrics_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "${GRAFANA_METRICS_PORT:-3002}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - pravaha-network
+    labels:
+      <<: *default-labels
+      service: "grafana-metrics"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===========================================================================
+  # Alertmanager - Alert Routing and Notification
+  # Handles alerts from Prometheus and routes to notification channels
+  # ===========================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: pravaha-alertmanager
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+      - '--cluster.listen-address='
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    networks:
+      - pravaha-network
+    labels:
+      <<: *default-labels
+      service: "alertmanager"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ===========================================================================
+  # Redis Exporter - Redis Metrics
+  # Exposes Redis metrics for Prometheus scraping (local Redis on app-server)
+  # ===========================================================================
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.55.0
+    container_name: pravaha-redis-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    depends_on:
+      - redis
+    networks:
+      - pravaha-network
+    labels:
+      <<: *default-labels
+      service: "redis-exporter"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9121/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # Node Exporter - Host System Metrics
+  # Exposes hardware and OS metrics for the app server
+  # ===========================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: pravaha-node-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--collector.netclass.ignored-devices=^(veth.*|docker.*|br-.*)$$'
+      - '--collector.textfile.directory=/etc/node-exporter/'
+      - '--no-collector.ipvs'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - pravaha-network
+    labels:
+      <<: *default-labels
+      service: "node-exporter"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 32M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ===========================================================================
+  # PostgreSQL Exporter - Database Metrics (External Database Server)
+  # Connects to the external PostgreSQL server on DB_SERVER_IP
+  # ===========================================================================
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: pravaha-postgres-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      # Connect to external PostgreSQL on database server
+      # DATA_SOURCE_NAME format: postgresql://user:password@host:port/database?sslmode=disable
+      - DATA_SOURCE_NAME=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DB_SERVER_IP:-${POSTGRES_HOST}}:${POSTGRES_PORT:-5432}/${PLATFORM_DB:-autoanalytics}?sslmode=${POSTGRES_SSL_MODE:-prefer}
+      - PG_EXPORTER_DISABLE_DEFAULT_METRICS=false
+      - PG_EXPORTER_DISABLE_SETTINGS_METRICS=false
+      - PG_EXPORTER_AUTO_DISCOVER_DATABASES=true
+      - PG_EXPORTER_EXCLUDE_DATABASES=template0,template1
+      - PG_EXPORTER_EXTEND_QUERY_PATH=/etc/postgres_exporter/queries.yml
+    volumes:
+      - ./monitoring/postgres-exporter-queries.yml:/etc/postgres_exporter/queries.yml:ro
+    extra_hosts:
+      - "db-server:${DB_SERVER_IP:-${POSTGRES_HOST_IP:-127.0.0.1}}"
+    networks:
+      - pravaha-network
+    labels:
+      <<: *default-labels
+      service: "postgres-exporter"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9187/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+# =============================================================================
+# Networks (extends main compose file)
+# =============================================================================
+networks:
+  pravaha-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes for Metrics Stack
+# =============================================================================
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_metrics_data:
+    driver: local
+  alertmanager_data:
+    driver: local
