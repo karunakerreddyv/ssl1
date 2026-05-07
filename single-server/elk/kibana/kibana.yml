@@ -1,0 +1,32 @@
+# =============================================================================
+# Kibana Configuration - Pravaha Platform
+# =============================================================================
+
+server.host: "0.0.0.0"
+server.port: 5601
+server.name: "pravaha-kibana"
+server.basePath: "/elk"
+server.rewriteBasePath: true
+
+# Elasticsearch connection
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "${KIBANA_SYSTEM_PASSWORD}"
+
+# Security
+xpack.encryptedSavedObjects.encryptionKey: "${KIBANA_ENCRYPTION_KEY}"
+xpack.reporting.encryptionKey: "${KIBANA_REPORTING_KEY}"
+xpack.security.encryptionKey: "${KIBANA_SECURITY_KEY}"
+
+# Telemetry
+telemetry.enabled: false
+
+# Logging
+logging:
+  appenders:
+    default:
+      type: console
+      layout:
+        type: pattern
+  root:
+    level: info

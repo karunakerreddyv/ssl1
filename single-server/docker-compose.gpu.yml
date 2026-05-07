@@ -1,0 +1,26 @@
+# =============================================================================
+# Pravaha — GPU Overlay for Ollama LLM
+# =============================================================================
+# Adds NVIDIA GPU acceleration to the Ollama service.
+# Requires: nvidia-container-toolkit installed on the host.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile llm up -d
+#
+# Prerequisites:
+#   1. NVIDIA GPU with CUDA support
+#   2. NVIDIA drivers installed (nvidia-smi should work)
+#   3. nvidia-container-toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#
+# This file is NOT used by default. CPU inference works without GPU.
+# =============================================================================
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

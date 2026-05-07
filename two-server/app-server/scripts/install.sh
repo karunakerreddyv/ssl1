@@ -35,7 +35,10 @@ ORIGINAL_ARGS="$*"
 # Global Configuration
 # =============================================================================
 SCRIPT_VERSION="2.0.0"
-DEPLOY_DIR="/opt/pravaha"
+# DEPLOY_DIR can be overridden via env var for non-standard install locations
+# (e.g., /var/lib/pravaha, /srv/pravaha, or for CI/test environments).
+# Defaults to /opt/pravaha for compatibility with the documented client install.
+DEPLOY_DIR="${DEPLOY_DIR:-/opt/pravaha}"
 STATE_FILE=""
 INSTALL_LOG=""
 CLEANUP_ON_EXIT=true
@@ -374,11 +377,14 @@ validate_external_database() {
     fi
 
     # Test write permissions
+    # NOTE: psql -q (quiet) is required — without it, CREATE/DROP command tags
+    # are written to stdout alongside the SELECT result, polluting $write_test
+    # with "CREATETABLEDROPTABLEok" and failing the equality check.
     log_info "Verifying write permissions..."
     local write_test=$(docker run --rm --network host \
         -e PGPASSWORD="$password" \
         postgres:17-alpine \
-        psql "postgresql://$user@$host:$port/$platform_db$conn_opts" \
+        psql -q "postgresql://$user@$host:$port/$platform_db$conn_opts" \
         -t -c "CREATE TABLE IF NOT EXISTS _pravaha_install_test (id int); DROP TABLE IF EXISTS _pravaha_install_test; SELECT 'ok';" 2>/dev/null | tr -d '[:space:]')
 
     if [[ "$write_test" != "ok" ]]; then
@@ -427,8 +433,8 @@ check_network_connectivity() {
         registry=$(grep "^REGISTRY=" "$script_dir/.env.example" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
     fi
 
-    # Default to GHCR if not set
-    registry="${registry:-ghcr.io/talentfino/pravaha}"
+    # Default to Docker Hub karunakervgrc1 (matches .env.example default)
+    registry="${registry:-karunakervgrc1}"
 
     # Check connectivity based on registry type
     if [[ "$registry" == ghcr.io/* ]]; then
@@ -619,6 +625,54 @@ validate_ports() {
     return 0
 }
 
+# Validate .env file - warn about CHANGE_ME placeholders
+validate_env_placeholders() {
+    local env_file=$1
+
+    if [[ ! -f "$env_file" ]]; then
+        return 0
+    fi
+
+    log_info "Validating environment configuration..."
+    local placeholders=$(grep -c "CHANGE_ME" "$env_file" 2>/dev/null || echo "0")
+    if [[ $placeholders -gt 0 ]]; then
+        log_warning "Found $placeholders CHANGE_ME placeholders in $env_file"
+        log_warning "These will be auto-generated during installation"
+    fi
+    return 0
+}
+
+# Validate operator-supplied SSL certificates if present
+validate_ssl_certificates() {
+    local ssl_dir=$1
+
+    local fullchain="$ssl_dir/fullchain.pem"
+    local privkey="$ssl_dir/privkey.pem"
+
+    if [[ ! -f "$fullchain" ]] || [[ ! -f "$privkey" ]]; then
+        return 0
+    fi
+
+    log_info "Validating SSL certificates..."
+
+    if ! openssl x509 -checkend 0 -noout -in "$fullchain" 2>/dev/null; then
+        log_error "SSL certificate is expired or invalid"
+        return 1
+    fi
+
+    local cert_modulus=$(openssl x509 -noout -modulus -in "$fullchain" 2>/dev/null | md5sum | awk '{print $1}')
+    local key_modulus=$(openssl rsa -noout -modulus -in "$privkey" 2>/dev/null | md5sum | awk '{print $1}')
+
+    if [[ "$cert_modulus" != "$key_modulus" ]]; then
+        log_error "SSL certificate and private key do not match"
+        return 1
+    fi
+
+    local expiry_date=$(openssl x509 -enddate -noout -in "$fullchain" 2>/dev/null | cut -d= -f2)
+    log_success "SSL certificate valid until: $expiry_date"
+    return 0
+}
+
 run_pre_deployment_checks() {
     local deploy_dir=$1
 
@@ -632,6 +686,8 @@ run_pre_deployment_checks() {
     validate_docker_version || failed=1
     validate_compose_version || failed=1
     validate_ports
+    validate_env_placeholders "$deploy_dir/.env"
+    validate_ssl_certificates "$deploy_dir/ssl" || failed=1
 
     echo ""
 
@@ -790,7 +846,9 @@ setup_firewall() {
 # Setup Deployment Directory
 # =============================================================================
 setup_deployment_dir() {
-    local deploy_dir="/opt/pravaha"
+    # Honor DEPLOY_DIR override (set via env var) so non-standard install
+    # locations work; defaults to the documented /opt/pravaha for clients.
+    local deploy_dir="${DEPLOY_DIR:-/opt/pravaha}"
     local script_dir="$(cd "$(dirname "$0")/.." && pwd)"
 
     log_info "Setting up deployment directory at $deploy_dir..."
@@ -1057,7 +1115,7 @@ authenticate_registry() {
     if [[ -f "$deploy_dir/.env" ]]; then
         registry=$(grep "^REGISTRY=" "$deploy_dir/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
     fi
-    registry="${registry:-ghcr.io/talentfino/pravaha}"
+    registry="${registry:-karunakervgrc1}"
 
     # Read image prefix from .env
     if [[ -f "$deploy_dir/.env" ]]; then
@@ -1161,8 +1219,24 @@ pull_images() {
     # Authenticate with the configured registry
     authenticate_registry "$deploy_dir"
 
+    # Load environment to honor ENABLE_LOGGING and OLLAMA_ENABLED overlays
+    set -a
+    source "$deploy_dir/.env" 2>/dev/null || true
+    set +a
+
+    # Build compose flags so ALL configured images are pre-pulled (avoids slow first-start later)
+    local pull_flags=()
+    if [[ "${ENABLE_LOGGING:-false}" == "true" ]]; then
+        pull_flags+=("-f" "docker-compose.yml" "-f" "docker-compose.logging.yml")
+        log_info "Including logging stack images (Loki, Promtail, Grafana)"
+    fi
+    if [[ "${OLLAMA_ENABLED:-false}" == "true" ]]; then
+        pull_flags+=("--profile" "llm")
+        log_info "Including Ollama LLM image"
+    fi
+
     # Pull images with retry logic (network can be flaky)
-    if ! retry_with_backoff 3 5 60 docker compose pull; then
+    if ! retry_with_backoff 3 5 60 docker compose "${pull_flags[@]}" pull; then
         log_error "Failed to pull Docker images after multiple attempts"
         log_error ""
         log_error "Troubleshooting steps:"
@@ -1238,6 +1312,53 @@ BRAND_EOF
 }
 
 # =============================================================================
+# Cleanup Demo Users — FRESH INSTALL ONLY
+# =============================================================================
+# Removes the three default demo users created by the init migration so that
+# fresh client deployments boot with exactly the two client seed users
+# (karunakerv@curasoftware.com + demouser@curasoftware.com).
+#
+# CRITICAL: this function MUST only run on FRESH installs. Detected by the
+# absence of $deploy_dir/.installed (created at the very end of main()).
+# update.sh never calls this function, so existing demo deployments and
+# any client deployment past day-one are never affected.
+#
+# Idempotent: deleteMany of non-existent rows returns affected=0, no error.
+# =============================================================================
+cleanup_demo_users_on_fresh_install() {
+    local deploy_dir=$1
+
+    if [[ -f "$deploy_dir/.installed" ]]; then
+        log_info "Skipping demo-user cleanup — existing installation detected (.installed present)"
+        return 0
+    fi
+
+    log_info "Removing init-migration demo users (fresh install only)..."
+
+    cd "$deploy_dir"
+    # Run from /app/packages/backend so @prisma/client resolves via that
+    # package's node_modules (the dynamic ESM resolver needs cwd at the
+    # package boundary).
+    if docker compose exec -T -w /app/packages/backend backend node --input-type=module -e '
+        const { PrismaClient } = await import("@prisma/client");
+        const prisma = new PrismaClient();
+        try {
+            const demoIds    = ["admin-user-default", "krishna-user-supersight", "demo-user-default"];
+            const demoEmails = ["admin@pravaha.io", "krishna@supersight.com", "demo@pravaha.io"];
+            const removedRoles = await prisma.userRole.deleteMany({ where: { userId: { in: demoIds } } });
+            const removedUsers = await prisma.user.deleteMany({ where: { email: { in: demoEmails } } });
+            console.log(`Removed ${removedUsers.count} demo users + ${removedRoles.count} role assignments`);
+        } finally {
+            await prisma.$disconnect();
+        }
+    ' 2>/dev/null; then
+        log_success "Demo users removed (fresh install)"
+    else
+        log_warning "Demo-user cleanup skipped (backend not yet ready or no demo users present)"
+    fi
+}
+
+# =============================================================================
 # Start Services
 # =============================================================================
 start_services() {
@@ -1246,12 +1367,40 @@ start_services() {
     log_info "Starting all services..."
 
     cd "$deploy_dir"
-    docker compose up -d
+
+    # Load environment to honor ENABLE_LOGGING and OLLAMA_ENABLED overlays
+    set -a
+    source "$deploy_dir/.env" 2>/dev/null || true
+    set +a
+    local enable_logging="${ENABLE_LOGGING:-false}"
+    local enable_ollama="${OLLAMA_ENABLED:-false}"
+
+    # Build compose flags (file overlays + profiles)
+    local compose_flags=()
+    if [[ "$enable_logging" == "true" ]]; then
+        compose_flags+=("-f" "docker-compose.yml" "-f" "docker-compose.logging.yml")
+        log_info "Logging stack enabled (Loki + Promtail + Grafana)"
+    fi
+    if [[ "$enable_ollama" == "true" ]]; then
+        compose_flags+=("--profile" "llm")
+        log_info "Local LLM (Ollama) enabled"
+    fi
+
+    log_info "Starting services (logging=$enable_logging, ollama=$enable_ollama)..."
+    docker compose "${compose_flags[@]}" up -d
 
     log_info "Waiting for services to be healthy..."
 
-    # Wait for core services (no postgres - using external)
-    local services=("pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-jupyter" "pravaha-nginx")
+    # Build full service list — external postgres, so check all 11 app-side services
+    local services=("pravaha-redis" "pravaha-backend" "pravaha-frontend" "pravaha-superset" "pravaha-ml-service" "pravaha-jupyter" "pravaha-nginx" "pravaha-celery-training" "pravaha-celery-prediction" "pravaha-celery-monitoring" "pravaha-celery-beat")
+
+    if [[ "$enable_logging" == "true" ]]; then
+        services+=("pravaha-loki" "pravaha-promtail" "pravaha-grafana-logs")
+    fi
+    if [[ "$enable_ollama" == "true" ]]; then
+        services+=("pravaha-ollama")
+    fi
+
     local failed=0
 
     for service in "${services[@]}"; do
@@ -1263,6 +1412,7 @@ start_services() {
             *backend*)    max_attempts=24 ;;
             *celery*)     max_attempts=18 ;;
             *jupyter*)    max_attempts=12 ;;
+            *ollama*)     max_attempts=24 ;;
             *)            max_attempts=12 ;;
         esac
 
@@ -1285,7 +1435,7 @@ start_services() {
         fi
     done
 
-    docker compose ps
+    docker compose "${compose_flags[@]}" ps
 
     if [[ $failed -eq 0 ]]; then
         log_success "All services started and healthy"
@@ -1931,6 +2081,15 @@ main() {
     fi
 
     # =========================================================================
+    # STEP 13b: Demo-user cleanup (FRESH INSTALL ONLY)
+    # =========================================================================
+    # Removes init-migration demo users (admin@pravaha.io, krishna@supersight.com,
+    # demo@pravaha.io) so the fresh client deployment boots with exactly the two
+    # client seed users. Gated by the absence of $deploy_dir/.installed so that
+    # update.sh re-runs and existing deployments are never disturbed.
+    cleanup_demo_users_on_fresh_install "$deploy_dir"
+
+    # =========================================================================
     # STEP 14: Verification
     # =========================================================================
     log_step "Running post-installation verification..."
@@ -2002,6 +2161,17 @@ main() {
         log_success "Jupyter Notebook health check passed"
     else
         log_warning "Jupyter Notebook health check failed (non-critical)"
+    fi
+
+    # Run comprehensive health check across ALL 11 services (covers ml-service, superset, celery, external DB)
+    if [[ -x "$deploy_dir/scripts/health-check.sh" ]]; then
+        log_info "Running comprehensive health check..."
+        if "$deploy_dir/scripts/health-check.sh" --quick 2>/dev/null; then
+            log_success "Comprehensive health check passed"
+        else
+            log_warning "Some services may need attention - run ./scripts/health-check.sh for details"
+            verification_failed=1
+        fi
     fi
 
     save_checkpoint "verification" "completed"

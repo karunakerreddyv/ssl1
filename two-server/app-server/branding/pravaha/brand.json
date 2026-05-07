@@ -1,0 +1,41 @@
+{
+  "name": "Pravaha",
+  "tagline": "Intelligent Business Process Platform",
+  "companyName": "Pravaha Inc.",
+  "companyUrl": "https://pravaha.io",
+  "supportEmail": "support@pravaha.io",
+  "supportUrl": "https://support.pravaha.com",
+  "copyrightHolder": "Pravaha Inc.",
+  "description": "Enterprise Workflow Engine",
+  "colors": {
+    "primary": "#4f7bff",
+    "secondary": "#764ba2"
+  },
+  "features": {
+    "showLandingPage": true,
+    "showPublicRegistration": true
+  },
+  "legal": {
+    "privacyEmail": "privacy@pravaha.com",
+    "legalEmail": "legal@pravaha.com",
+    "dpoEmail": "dpo@pravaha.com"
+  },
+  "emails": {
+    "fromName": "Pravaha Platform",
+    "fromAddress": "noreply@pravaha.io"
+  },
+  "docker": {
+    "prefix": "pravaha",
+    "registry": "analytics"
+  },
+  "documentation": {
+    "docsUrl": "https://docs.pravaha.io",
+    "runbookUrl": "https://docs.pravaha.io/runbooks"
+  },
+  "system": {
+    "systemEmail": "system@pravaha.io",
+    "metricsPrefix": "pravaha",
+    "jwtIssuer": "pravaha-backend",
+    "jwtAudience": "pravaha-api"
+  }
+}

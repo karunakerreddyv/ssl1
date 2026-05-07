@@ -1,0 +1,35 @@
+{
+  "index_patterns": ["pravaha-logs-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.lifecycle.name": "pravaha-logs-policy",
+      "index.lifecycle.rollover_alias": "pravaha-logs"
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "message": { "type": "text" },
+        "service": { "type": "keyword" },
+        "log_level": { "type": "keyword" },
+        "container": {
+          "properties": {
+            "name": { "type": "keyword" },
+            "id": { "type": "keyword" },
+            "image": {
+              "properties": {
+                "name": { "type": "keyword" }
+              }
+            }
+          }
+        },
+        "parsed": {
+          "type": "object",
+          "dynamic": true
+        }
+      }
+    }
+  },
+  "priority": 200
+}

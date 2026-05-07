@@ -266,6 +266,90 @@ docker compose restart frontend backend
 ./scripts/backup.sh --database
 ```
 
+## Update
+
+Updates are applied to the app-server only. The database server is updated separately and runs PostgreSQL natively (not via these scripts).
+
+```bash
+# Update to specific version (auto-rollback enabled)
+./scripts/update.sh v1.2.0
+
+# Update to latest version
+./scripts/update.sh latest
+
+# Preview what would happen (dry run)
+./scripts/update.sh v1.2.0 --dry-run
+
+# Update without auto-rollback
+./scripts/update.sh v1.2.0 --no-rollback
+
+# Update without backup (not recommended)
+./scripts/update.sh v1.2.0 --skip-backup
+
+# Update with extended health-check timeout (default 300s)
+./scripts/update.sh v1.2.0 --timeout 600
+
+# Update from a pre-staged release directory
+./scripts/update.sh v1.2.0 --release-dir /tmp/pravaha-v1.2.0
+
+# Restart with new env values only (skip docker-compose/scripts/nginx file updates)
+./scripts/update.sh v1.2.0 --skip-file-update
+```
+
+**Supported flags:**
+
+- `--skip-backup` — Skip backup creation (not recommended for production)
+- `--no-rollback` — Disable automatic rollback on health-check failure
+- `--dry-run` — Show what would happen without executing
+- `--timeout <sec>` — Health check timeout in seconds (default: 300)
+- `--release-dir <path>` — Directory containing new release files
+- `--skip-file-update` — Skip docker-compose/scripts/nginx file updates (env-only restart)
+
+**What update.sh does:**
+
+1. Validates external database is reachable (`validate-external-db.sh`)
+2. Creates a checkpoint (`pre_update_<timestamp>`) for instant rollback
+3. Backs up app-server volumes + configs (DB backup must run on the database server separately)
+4. Updates the IMAGE_TAG in `.env`
+5. Pulls new Docker images (with logging/llm overlays if `ENABLE_LOGGING`/`OLLAMA_ENABLED`=true)
+6. Stops services gracefully (respects Celery task completion)
+7. Starts services with new version
+8. Runs Prisma migrations against the external DB
+9. Waits for all health checks to pass
+10. **If health checks fail and `--no-rollback` is NOT set**: Automatically rolls back to checkpoint
+
+**Two-server-specific notes:**
+
+- The app-server `update.sh` does NOT touch the database. Schema migrations run against the external DB but no DB-level upgrades are performed here.
+- If a major version bump requires PostgreSQL itself to be upgraded, follow the database-server upgrade procedure (see `deploy/two-server/database-server/README.md`) on that host first.
+- DB password / SSL cert rotation: edit `.env` on app-server with the new credentials, then run `docker compose down && docker compose up -d` (no image pull needed). For a controlled restart with health verification, use `./scripts/update.sh <current-version> --skip-file-update`.
+
+## Rollback
+
+```bash
+# Rollback to last checkpoint
+./scripts/rollback.sh
+
+# List available checkpoints
+./scripts/rollback.sh --list
+
+# Rollback to specific checkpoint
+./scripts/rollback.sh --checkpoint pre_update_20240115_120000
+
+# Verify current state vs checkpoint
+./scripts/rollback.sh --verify
+```
+
+**What rollback.sh does:**
+
+1. Stops current services
+2. Restores `.env`, `docker-compose*.yml`, `nginx/`, `scripts/`, `monitoring/`, `logging/` from the chosen checkpoint
+3. Restarts services with the prior IMAGE_TAG
+4. Re-runs `validate-external-db.sh` to confirm DB connectivity is intact
+5. Runs `health-check.sh --quick` to verify all 11 services are healthy
+
+**Important:** Rollback restores **only the app-server**. If the failed update applied database migrations that the rolled-back app code can't read, you'll need to roll back the DB schema separately on the database server (using its own backup taken pre-update).
+
 ## Services
 
 | Service | Port | Description |

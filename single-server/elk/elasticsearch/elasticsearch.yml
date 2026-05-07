@@ -1,0 +1,30 @@
+# =============================================================================
+# Elasticsearch Configuration - Pravaha Platform
+# =============================================================================
+cluster.name: pravaha-logs
+node.name: es-node-01
+
+network.host: 0.0.0.0
+http.port: 9200
+
+discovery.type: single-node
+
+# Paths
+path.data: /usr/share/elasticsearch/data
+path.logs: /usr/share/elasticsearch/logs
+
+# Memory
+bootstrap.memory_lock: true
+
+# Security (configured via environment variables)
+xpack.security.enabled: ${ELASTIC_SECURITY_ENABLED:true}
+xpack.security.enrollment.enabled: false
+xpack.security.http.ssl.enabled: false
+xpack.security.transport.ssl.enabled: false
+
+# Disable unnecessary features for log storage
+xpack.ml.enabled: false
+ingest.geoip.downloader.enabled: false
+
+# Index lifecycle management
+xpack.ilm.enabled: true

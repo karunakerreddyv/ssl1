@@ -1,0 +1,592 @@
+# =============================================================================
+# Pravaha Platform Alert Rules
+# Enterprise-grade alerting for production monitoring
+# =============================================================================
+#
+# Alert Severities:
+#   - critical: Immediate action required, potential service outage
+#   - warning: Attention needed, may escalate to critical
+#   - info: Informational, for tracking and trending
+#
+# Alert Categories:
+#   - Service availability (up/down)
+#   - Performance (latency, throughput)
+#   - Resources (CPU, memory, disk)
+#   - Application-specific (Celery, ML training)
+#
+# =============================================================================
+
+groups:
+  # ===========================================================================
+  # Service Availability Alerts
+  # ===========================================================================
+  - name: service_availability
+    rules:
+      # -------------------------------------------------------------------------
+      # ServiceDown - Generic service down detection
+      # -------------------------------------------------------------------------
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "The service {{ $labels.job }} (instance {{ $labels.instance }}) has been down for more than 1 minute."
+          runbook_url: "https://docs.pravaha.io/runbooks/service-down"
+          dashboard_url: "http://grafana:3000/d/service-overview"
+
+      # -------------------------------------------------------------------------
+      # MLServiceDown - ML Service specific
+      # -------------------------------------------------------------------------
+      - alert: MLServiceDown
+        expr: up{job="ml-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ml-service
+        annotations:
+          summary: "ML Service is down"
+          description: "The ML Service API has been unreachable for more than 1 minute. Training and prediction operations will fail."
+          runbook_url: "https://docs.pravaha.io/runbooks/ml-service-down"
+
+      # -------------------------------------------------------------------------
+      # BackendDown - Node.js backend specific
+      # -------------------------------------------------------------------------
+      - alert: BackendDown
+        expr: up{job="backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: "Backend API is down"
+          description: "The Node.js backend API has been unreachable for more than 1 minute. Platform functionality is impaired."
+          runbook_url: "https://docs.pravaha.io/runbooks/backend-down"
+
+      # -------------------------------------------------------------------------
+      # PostgreSQLDown (standardized naming across all deployments)
+      # -------------------------------------------------------------------------
+      - alert: PostgreSQLDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: postgres
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "PostgreSQL database has been unreachable for more than 1 minute. All services depending on the database will fail."
+          runbook_url: "https://docs.pravaha.io/runbooks/postgres-down"
+
+      # -------------------------------------------------------------------------
+      # RedisDown
+      # -------------------------------------------------------------------------
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis is down"
+          description: "Redis has been unreachable for more than 1 minute. Caching and Celery task queue will be affected."
+          runbook_url: "https://docs.pravaha.io/runbooks/redis-down"
+
+  # ===========================================================================
+  # ML Service Performance Alerts
+  # ===========================================================================
+  - name: ml_service_performance
+    rules:
+      # -------------------------------------------------------------------------
+      # MLServiceHighLatency - P95 response time > 5s
+      # -------------------------------------------------------------------------
+      - alert: MLServiceHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="ml-service"}[5m])) by (le)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-service
+        annotations:
+          summary: "ML Service P95 latency is high"
+          description: "ML Service P95 response time is {{ $value | humanizeDuration }}, exceeding the 5s threshold. This may indicate heavy load or slow model inference."
+          runbook_url: "https://docs.pravaha.io/runbooks/ml-high-latency"
+
+      # -------------------------------------------------------------------------
+      # MLServiceHighErrorRate
+      # -------------------------------------------------------------------------
+      - alert: MLServiceHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="ml-service", status=~"5.."}[5m]))
+          / sum(rate(http_requests_total{job="ml-service"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-service
+        annotations:
+          summary: "ML Service error rate is high"
+          description: "ML Service is returning 5xx errors at a rate of {{ $value | humanizePercentage }}. Check application logs for details."
+          runbook_url: "https://docs.pravaha.io/runbooks/ml-high-error-rate"
+
+      # -------------------------------------------------------------------------
+      # MLServiceHighErrorRateCritical
+      # -------------------------------------------------------------------------
+      - alert: MLServiceHighErrorRateCritical
+        expr: |
+          sum(rate(http_requests_total{job="ml-service", status=~"5.."}[5m]))
+          / sum(rate(http_requests_total{job="ml-service"}[5m])) > 0.2
+        for: 2m
+        labels:
+          severity: critical
+          service: ml-service
+        annotations:
+          summary: "ML Service error rate is critically high"
+          description: "ML Service is returning 5xx errors at a rate of {{ $value | humanizePercentage }}. Immediate investigation required."
+          runbook_url: "https://docs.pravaha.io/runbooks/ml-critical-error-rate"
+
+      # -------------------------------------------------------------------------
+      # TrainingJobFailed
+      # -------------------------------------------------------------------------
+      - alert: TrainingJobFailed
+        expr: increase(ml_training_jobs_failed_total[1h]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-service
+        annotations:
+          summary: "Multiple ML training jobs have failed"
+          description: "{{ $value }} training jobs have failed in the last hour. Check training logs and data quality."
+          runbook_url: "https://docs.pravaha.io/runbooks/training-job-failed"
+
+  # ===========================================================================
+  # Celery Queue Alerts
+  # ===========================================================================
+  - name: celery_alerts
+    rules:
+      # -------------------------------------------------------------------------
+      # CeleryQueueBacklog - More than 500 tasks waiting (enterprise threshold)
+      # -------------------------------------------------------------------------
+      - alert: CeleryQueueBacklog
+        expr: |
+          redis_db_keys{db="db3"} > 500
+        for: 10m
+        labels:
+          severity: warning
+          service: celery
+        annotations:
+          summary: "Celery task queue has a large backlog"
+          description: "There are {{ $value }} tasks waiting in the Celery queue. This may indicate workers are overwhelmed or stuck."
+          runbook_url: "https://docs.pravaha.io/runbooks/celery-backlog"
+
+      # -------------------------------------------------------------------------
+      # CeleryQueueBacklogCritical - More than 1000 tasks waiting (enterprise threshold)
+      # -------------------------------------------------------------------------
+      - alert: CeleryQueueBacklogCritical
+        expr: |
+          redis_db_keys{db="db3"} > 1000
+        for: 5m
+        labels:
+          severity: critical
+          service: celery
+        annotations:
+          summary: "Celery task queue backlog is critical"
+          description: "There are {{ $value }} tasks waiting in the Celery queue. Workers may be down or severely overloaded."
+          runbook_url: "https://docs.pravaha.io/runbooks/celery-critical-backlog"
+
+      # -------------------------------------------------------------------------
+      # CeleryWorkerDown
+      # -------------------------------------------------------------------------
+      - alert: CeleryWorkerDown
+        expr: |
+          absent(celery_worker_up{worker=~"training_worker.*"}) == 1
+          or absent(celery_worker_up{worker=~"prediction_worker.*"}) == 1
+          or absent(celery_worker_up{worker=~"monitoring_worker.*"}) == 1
+        for: 5m
+        labels:
+          severity: critical
+          service: celery
+        annotations:
+          summary: "Celery worker is down"
+          description: "One or more Celery workers are not responding. Check container health and logs."
+          runbook_url: "https://docs.pravaha.io/runbooks/celery-worker-down"
+
+  # ===========================================================================
+  # PostgreSQL Alerts
+  # ===========================================================================
+  - name: postgres_alerts
+    rules:
+      # -------------------------------------------------------------------------
+      # PostgresHighConnections - More than 80% of max connections used
+      # -------------------------------------------------------------------------
+      - alert: PostgresHighConnections
+        expr: |
+          pg_stat_activity_count / pg_settings_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: "PostgreSQL connection usage is high"
+          description: "PostgreSQL is using {{ $value | humanizePercentage }} of available connections. Consider increasing max_connections or reviewing connection pooling."
+          runbook_url: "https://docs.pravaha.io/runbooks/postgres-high-connections"
+
+      # -------------------------------------------------------------------------
+      # PostgresHighConnectionsCritical - More than 95% of max connections used
+      # -------------------------------------------------------------------------
+      - alert: PostgresHighConnectionsCritical
+        expr: |
+          pg_stat_activity_count / pg_settings_max_connections > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: postgres
+        annotations:
+          summary: "PostgreSQL connection usage is critical"
+          description: "PostgreSQL is using {{ $value | humanizePercentage }} of available connections. New connections may be rejected."
+          runbook_url: "https://docs.pravaha.io/runbooks/postgres-critical-connections"
+
+      # -------------------------------------------------------------------------
+      # PostgresReplicationLag
+      # -------------------------------------------------------------------------
+      - alert: PostgresReplicationLag
+        expr: pg_replication_lag > 60
+        for: 5m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: "PostgreSQL replication lag is high"
+          description: "PostgreSQL replication lag is {{ $value }}s. Replica may be falling behind."
+          runbook_url: "https://docs.pravaha.io/runbooks/postgres-replication-lag"
+
+      # -------------------------------------------------------------------------
+      # PostgresDeadlocks
+      # -------------------------------------------------------------------------
+      - alert: PostgresDeadlocks
+        expr: increase(pg_stat_database_deadlocks[1h]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: "PostgreSQL deadlocks detected"
+          description: "{{ $value }} deadlocks have occurred in the last hour. Review long-running transactions and query patterns."
+          runbook_url: "https://docs.pravaha.io/runbooks/postgres-deadlocks"
+
+      # -------------------------------------------------------------------------
+      # PostgresSlowQueries
+      # -------------------------------------------------------------------------
+      - alert: PostgresSlowQueries
+        expr: |
+          rate(pg_stat_activity_max_tx_duration{datname!~"template.*"}[5m]) > 300
+        for: 5m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: "PostgreSQL has long-running queries"
+          description: "Queries running longer than 5 minutes detected. This may impact database performance."
+          runbook_url: "https://docs.pravaha.io/runbooks/postgres-slow-queries"
+
+  # ===========================================================================
+  # Redis Alerts
+  # ===========================================================================
+  - name: redis_alerts
+    rules:
+      # -------------------------------------------------------------------------
+      # RedisHighMemory - More than 90% memory used
+      # -------------------------------------------------------------------------
+      - alert: RedisHighMemory
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis is using {{ $value | humanizePercentage }} of its configured memory limit. Consider increasing maxmemory or reviewing cache policies."
+          runbook_url: "https://docs.pravaha.io/runbooks/redis-high-memory"
+
+      # -------------------------------------------------------------------------
+      # RedisHighMemoryCritical - More than 95% memory used
+      # -------------------------------------------------------------------------
+      - alert: RedisHighMemoryCritical
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis memory usage is critical"
+          description: "Redis is using {{ $value | humanizePercentage }} of its configured memory limit. Evictions may occur."
+          runbook_url: "https://docs.pravaha.io/runbooks/redis-critical-memory"
+
+      # -------------------------------------------------------------------------
+      # RedisRejectedConnections
+      # -------------------------------------------------------------------------
+      - alert: RedisRejectedConnections
+        expr: increase(redis_rejected_connections_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis is rejecting connections"
+          description: "Redis has rejected {{ $value }} connections in the last 5 minutes. Check maxclients setting."
+          runbook_url: "https://docs.pravaha.io/runbooks/redis-rejected-connections"
+
+      # -------------------------------------------------------------------------
+      # RedisEvictions
+      # -------------------------------------------------------------------------
+      - alert: RedisEvictions
+        expr: increase(redis_evicted_keys_total[1h]) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis is evicting keys"
+          description: "Redis has evicted {{ $value }} keys in the last hour. Cache hit rate may be affected."
+          runbook_url: "https://docs.pravaha.io/runbooks/redis-evictions"
+
+  # ===========================================================================
+  # Infrastructure Alerts (Host System)
+  # ===========================================================================
+  - name: infrastructure_alerts
+    rules:
+      # -------------------------------------------------------------------------
+      # DiskSpaceLow - Less than 10% free
+      # -------------------------------------------------------------------------
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space is low on {{ $labels.mountpoint }}"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} free space remaining."
+          runbook_url: "https://docs.pravaha.io/runbooks/disk-space-low"
+
+      # -------------------------------------------------------------------------
+      # DiskSpaceCritical - Less than 5% free
+      # -------------------------------------------------------------------------
+      - alert: DiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space is critically low on {{ $labels.mountpoint }}"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} free space remaining. Immediate action required."
+          runbook_url: "https://docs.pravaha.io/runbooks/disk-space-critical"
+
+      # -------------------------------------------------------------------------
+      # HighCPUUsage
+      # -------------------------------------------------------------------------
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage on {{ $labels.instance }} is {{ $value | humanize }}% for more than 10 minutes."
+          runbook_url: "https://docs.pravaha.io/runbooks/high-cpu"
+
+      # -------------------------------------------------------------------------
+      # HighCPUUsageCritical
+      # -------------------------------------------------------------------------
+      - alert: HighCPUUsageCritical
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical CPU usage detected"
+          description: "CPU usage on {{ $labels.instance }} is {{ $value | humanize }}% for more than 5 minutes. System may become unresponsive."
+          runbook_url: "https://docs.pravaha.io/runbooks/critical-cpu"
+
+      # -------------------------------------------------------------------------
+      # HighMemoryUsage
+      # -------------------------------------------------------------------------
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage on {{ $labels.instance }} is {{ $value | humanizePercentage }}. OOM killer may be triggered."
+          runbook_url: "https://docs.pravaha.io/runbooks/high-memory"
+
+      # -------------------------------------------------------------------------
+      # HighMemoryUsageCritical
+      # -------------------------------------------------------------------------
+      - alert: HighMemoryUsageCritical
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical memory usage detected"
+          description: "Memory usage on {{ $labels.instance }} is {{ $value | humanizePercentage }}. OOM killer will likely be triggered soon."
+          runbook_url: "https://docs.pravaha.io/runbooks/critical-memory"
+
+      # -------------------------------------------------------------------------
+      # HighNetworkTraffic
+      # -------------------------------------------------------------------------
+      - alert: HighNetworkTraffic
+        expr: |
+          rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[5m]) > 100000000
+          or rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[5m]) > 100000000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High network traffic detected"
+          description: "Network traffic on {{ $labels.device }} ({{ $labels.instance }}) is {{ $value | humanize }}B/s."
+          runbook_url: "https://docs.pravaha.io/runbooks/high-network"
+
+      # -------------------------------------------------------------------------
+      # DiskIOSaturation
+      # -------------------------------------------------------------------------
+      - alert: DiskIOSaturation
+        expr: |
+          rate(node_disk_io_time_seconds_total[5m]) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk I/O saturation detected"
+          description: "Disk {{ $labels.device }} on {{ $labels.instance }} is saturated ({{ $value | humanizePercentage }} busy)."
+          runbook_url: "https://docs.pravaha.io/runbooks/disk-io-saturation"
+
+  # ===========================================================================
+  # Backend API Alerts
+  # ===========================================================================
+  - name: backend_alerts
+    rules:
+      # -------------------------------------------------------------------------
+      # BackendHighLatency
+      # -------------------------------------------------------------------------
+      - alert: BackendHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="backend"}[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: "Backend API P95 latency is high"
+          description: "Backend API P95 response time is {{ $value | humanizeDuration }}. User experience may be impacted."
+          runbook_url: "https://docs.pravaha.io/runbooks/backend-high-latency"
+
+      # -------------------------------------------------------------------------
+      # BackendHighErrorRate
+      # -------------------------------------------------------------------------
+      - alert: BackendHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="backend", status=~"5.."}[5m]))
+          / sum(rate(http_requests_total{job="backend"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: "Backend API error rate is high"
+          description: "Backend API is returning 5xx errors at a rate of {{ $value | humanizePercentage }}."
+          runbook_url: "https://docs.pravaha.io/runbooks/backend-high-error-rate"
+
+  # ===========================================================================
+  # Alertmanager Self-Monitoring
+  # ===========================================================================
+  - name: alertmanager_alerts
+    rules:
+      # -------------------------------------------------------------------------
+      # AlertmanagerConfigurationReloadFailed
+      # -------------------------------------------------------------------------
+      - alert: AlertmanagerConfigurationReloadFailed
+        expr: alertmanager_config_last_reload_successful != 1
+        for: 5m
+        labels:
+          severity: critical
+          service: alertmanager
+        annotations:
+          summary: "Alertmanager configuration reload failed"
+          description: "Alertmanager failed to reload its configuration. Alerts may not be routed correctly."
+          runbook_url: "https://docs.pravaha.io/runbooks/alertmanager-config-failed"
+
+      # -------------------------------------------------------------------------
+      # AlertmanagerNotificationsFailed
+      # -------------------------------------------------------------------------
+      - alert: AlertmanagerNotificationsFailed
+        expr: rate(alertmanager_notifications_failed_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: alertmanager
+        annotations:
+          summary: "Alertmanager is failing to send notifications"
+          description: "Alertmanager has failed to send {{ $value }} notifications. Check notification channel configuration."
+          runbook_url: "https://docs.pravaha.io/runbooks/alertmanager-notifications-failed"
+
+  # ===========================================================================
+  # Prometheus Self-Monitoring
+  # ===========================================================================
+  - name: prometheus_alerts
+    rules:
+      # -------------------------------------------------------------------------
+      # PrometheusConfigurationReloadFailed
+      # -------------------------------------------------------------------------
+      - alert: PrometheusConfigurationReloadFailed
+        expr: prometheus_config_last_reload_successful != 1
+        for: 5m
+        labels:
+          severity: critical
+          service: prometheus
+        annotations:
+          summary: "Prometheus configuration reload failed"
+          description: "Prometheus failed to reload its configuration. Scraping may be impacted."
+          runbook_url: "https://docs.pravaha.io/runbooks/prometheus-config-failed"
+
+      # -------------------------------------------------------------------------
+      # PrometheusTargetsMissing
+      # -------------------------------------------------------------------------
+      - alert: PrometheusTargetsMissing
+        expr: |
+          prometheus_sd_discovered_targets == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: prometheus
+        annotations:
+          summary: "Prometheus has no targets"
+          description: "Prometheus is not discovering any targets. Check service discovery configuration."
+          runbook_url: "https://docs.pravaha.io/runbooks/prometheus-no-targets"
+
+      # -------------------------------------------------------------------------
+      # PrometheusStorageHighUsage
+      # -------------------------------------------------------------------------
+      - alert: PrometheusStorageHighUsage
+        expr: |
+          prometheus_tsdb_storage_blocks_bytes / (1024 * 1024 * 1024) > 8
+        for: 5m
+        labels:
+          severity: warning
+          service: prometheus
+        annotations:
+          summary: "Prometheus storage usage is high"
+          description: "Prometheus is using {{ $value | humanize }}GB of storage. Consider adjusting retention settings."
+          runbook_url: "https://docs.pravaha.io/runbooks/prometheus-high-storage"

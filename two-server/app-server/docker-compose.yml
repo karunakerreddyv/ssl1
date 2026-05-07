@@ -89,7 +89,7 @@ services:
   # Frontend - React SPA
   # ===========================================================================
   frontend:
-    image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}frontend:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc1}/${IMAGE_PREFIX:-pravaha-}frontend:${IMAGE_TAG:-latest}
     container_name: pravaha-frontend
     restart: unless-stopped
     logging: *default-logging
@@ -121,7 +121,7 @@ services:
   # Connects to EXTERNAL PostgreSQL server
   # ===========================================================================
   backend:
-    image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}backend:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc1}/${IMAGE_PREFIX:-pravaha-}backend:${IMAGE_TAG:-latest}
     container_name: pravaha-backend
     restart: unless-stopped
     logging: *default-logging
@@ -159,7 +159,6 @@ services:
       - PLUGINS_DEV_PATH=/app/packages/pluginsdev
       - PLUGIN_STORAGE_PATH=${PLUGIN_STORAGE_PATH:-/app/plugins}
       - SOLUTION_PACK_STORAGE_PATH=${SOLUTION_PACK_STORAGE_PATH:-/app/solution-packs}
-      - PACK_DOCS_STORAGE_PATH=${PACK_DOCS_STORAGE_PATH:-/app/pack-docs}
       - SOLUTION_PACK_MAX_UPLOAD_SIZE=${SOLUTION_PACK_MAX_UPLOAD_SIZE:-209715200}
       - SOLUTION_PACK_DATA_GEN_MEMORY_MB=${SOLUTION_PACK_DATA_GEN_MEMORY_MB:-768}
     volumes:
@@ -173,7 +172,6 @@ services:
       - ./branding:/app/branding:ro
       - plugins:/app/plugins
       - solution_packs:/app/solution-packs
-      - pack_docs:/app/pack-docs
     depends_on:
       redis:
         condition: service_healthy
@@ -203,7 +201,7 @@ services:
   # Connects to EXTERNAL PostgreSQL server
   # ===========================================================================
   superset:
-    image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}superset:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc1}/${IMAGE_PREFIX:-pravaha-}superset:${IMAGE_TAG:-latest}
     container_name: pravaha-superset
     restart: unless-stopped
     logging: *default-logging
@@ -261,7 +259,7 @@ services:
   # Connects to EXTERNAL PostgreSQL server
   # ===========================================================================
   ml-service:
-    image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc1}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-ml-service
     restart: unless-stopped
     logging: *default-logging
@@ -322,7 +320,7 @@ services:
   # Handles ML model training tasks (long-running)
   # ===========================================================================
   celery-worker-training:
-    image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc1}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-celery-training
     restart: unless-stopped
     logging: *default-logging
@@ -378,7 +376,7 @@ services:
   # Handles ML prediction and batch processing tasks
   # ===========================================================================
   celery-worker-prediction:
-    image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc1}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-celery-prediction
     restart: unless-stopped
     logging: *default-logging
@@ -434,7 +432,7 @@ services:
   # Handles monitoring, alerting, analytics, and maintenance tasks
   # ===========================================================================
   celery-worker-monitoring:
-    image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc1}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-celery-monitoring
     restart: unless-stopped
     logging: *default-logging
@@ -487,7 +485,7 @@ services:
   # Runs scheduled/periodic tasks (model retraining, cleanup, etc.)
   # ===========================================================================
   celery-beat:
-    image: ${REGISTRY:-ghcr.io/talentfino/pravaha}/${IMAGE_PREFIX:-}ml-service:${IMAGE_TAG:-latest}
+    image: ${REGISTRY:-karunakervgrc1}/${IMAGE_PREFIX:-pravaha-}ml-service:${IMAGE_TAG:-latest}
     container_name: pravaha-celery-beat
     restart: unless-stopped
     logging: *default-logging
@@ -697,8 +695,6 @@ volumes:
   plugins:
     driver: local
   solution_packs:
-    driver: local
-  pack_docs:
     driver: local
   jupyter_notebooks:
     driver: local

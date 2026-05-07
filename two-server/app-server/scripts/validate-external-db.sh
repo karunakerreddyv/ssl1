@@ -336,10 +336,12 @@ check_write_permissions() {
         conn_opts="?sslmode=$POSTGRES_SSL_MODE"
     fi
 
+    # psql -q (quiet) suppresses CREATE/DROP command tags; without it the
+    # tags pollute stdout and the result equality check fails even on success.
     local result=$(docker run --rm --network host \
         -e PGPASSWORD="$POSTGRES_PASSWORD" \
         postgres:17-alpine \
-        psql "postgresql://$POSTGRES_USER@$POSTGRES_HOST:$POSTGRES_PORT/$PLATFORM_DB$conn_opts" \
+        psql -q "postgresql://$POSTGRES_USER@$POSTGRES_HOST:$POSTGRES_PORT/$PLATFORM_DB$conn_opts" \
         -t -c "CREATE TABLE IF NOT EXISTS _validation_test (id int); DROP TABLE IF EXISTS _validation_test; SELECT 'ok';" 2>/dev/null | tr -d '[:space:]')
 
     if [[ "$result" == "ok" ]]; then

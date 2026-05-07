@@ -1,0 +1,19 @@
+# =============================================================================
+# Logstash Configuration - Pravaha Platform
+# =============================================================================
+http.host: "0.0.0.0"
+http.port: 9600
+
+# Monitoring
+xpack.monitoring.enabled: true
+xpack.monitoring.elasticsearch.hosts: ["http://elasticsearch:9200"]
+xpack.monitoring.elasticsearch.username: "elastic"
+xpack.monitoring.elasticsearch.password: "${ELASTIC_PASSWORD}"
+
+# Pipeline settings
+pipeline.workers: 2
+pipeline.batch.size: 125
+pipeline.batch.delay: 50
+
+# Logging
+log.level: info

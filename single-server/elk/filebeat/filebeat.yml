@@ -1,0 +1,47 @@
+# =============================================================================
+# Filebeat Configuration - Pravaha Platform
+# Collects Docker container logs
+# =============================================================================
+
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      hints.enabled: true
+      templates:
+        - condition:
+            contains:
+              docker.container.name: "pravaha"
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*.log
+              processors:
+                - add_docker_metadata:
+                    host: "unix:///var/run/docker.sock"
+
+# Process all Pravaha containers
+filebeat.inputs:
+  - type: container
+    paths:
+      - '/var/lib/docker/containers/*/*.log'
+    processors:
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
+    include_lines: ['pravaha']
+
+# Output to Logstash
+output.logstash:
+  hosts: ["logstash:5044"]
+  bulk_max_size: 2048
+
+# Logging
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /usr/share/filebeat/logs
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+
+# Monitoring
+monitoring.enabled: false

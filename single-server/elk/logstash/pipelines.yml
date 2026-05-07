@@ -1,0 +1,6 @@
+# =============================================================================
+# Logstash Pipeline Configuration - Pravaha Platform
+# =============================================================================
+- pipeline.id: pravaha
+  path.config: "/usr/share/logstash/pipeline/pravaha.conf"
+  pipeline.workers: 2

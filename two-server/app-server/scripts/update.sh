@@ -165,8 +165,9 @@ source_env() {
 
     POSTGRES_MODE="external"  # Two-server: always external database
     DOMAIN="${DOMAIN:-localhost}"
+    ENABLE_LOGGING="${ENABLE_LOGGING:-false}"
 
-    log_info "Environment loaded: POSTGRES_MODE=$POSTGRES_MODE, DOMAIN=$DOMAIN"
+    log_info "Environment loaded: POSTGRES_MODE=$POSTGRES_MODE, DOMAIN=$DOMAIN, ENABLE_LOGGING=$ENABLE_LOGGING"
 }
 
 # =============================================================================
@@ -177,6 +178,9 @@ source_env() {
 compose_cmd() {
     # Two-server app: always external database, no bundled-db profile needed
     local compose_flags=()
+    if [[ "${ENABLE_LOGGING:-false}" == "true" ]]; then
+        compose_flags+=("-f" "docker-compose.yml" "-f" "docker-compose.logging.yml")
+    fi
     if [[ "${OLLAMA_ENABLED:-false}" == "true" ]]; then
         compose_flags+=("--profile" "llm")
     fi
