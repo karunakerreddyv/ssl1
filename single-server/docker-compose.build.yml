@@ -47,8 +47,8 @@ services:
 
   ml-service:
     build:
-      context: ../..
-      dockerfile: deploy/docker/ml-service.Dockerfile
+      context: ../../packages
+      dockerfile: ml-service/Dockerfile
       args:
         - VERSION=${IMAGE_TAG:-latest}
         - BUILD_DATE=${BUILD_DATE:-}
@@ -56,32 +56,32 @@ services:
   # Celery workers use the same image as ml-service
   celery-worker-training:
     build:
-      context: ../..
-      dockerfile: deploy/docker/ml-service.Dockerfile
+      context: ../../packages
+      dockerfile: ml-service/Dockerfile
       args:
         - VERSION=${IMAGE_TAG:-latest}
         - BUILD_DATE=${BUILD_DATE:-}
 
   celery-worker-prediction:
     build:
-      context: ../..
-      dockerfile: deploy/docker/ml-service.Dockerfile
+      context: ../../packages
+      dockerfile: ml-service/Dockerfile
       args:
         - VERSION=${IMAGE_TAG:-latest}
         - BUILD_DATE=${BUILD_DATE:-}
 
   celery-worker-monitoring:
     build:
-      context: ../..
-      dockerfile: deploy/docker/ml-service.Dockerfile
+      context: ../../packages
+      dockerfile: ml-service/Dockerfile
       args:
         - VERSION=${IMAGE_TAG:-latest}
         - BUILD_DATE=${BUILD_DATE:-}
 
   celery-beat:
     build:
-      context: ../..
-      dockerfile: deploy/docker/ml-service.Dockerfile
+      context: ../../packages
+      dockerfile: ml-service/Dockerfile
       args:
         - VERSION=${IMAGE_TAG:-latest}
         - BUILD_DATE=${BUILD_DATE:-}
